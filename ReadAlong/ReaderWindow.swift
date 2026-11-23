@@ -13,6 +13,8 @@ final class ReaderController: NSObject, NSWindowDelegate {
     private var lastHighlighted = NSRange(location: 0, length: 0)
     private var highlighted = false
     private var isStarting = false
+    /// Manual scrolling suppresses auto-scroll until it settles.
+    private var manualScrollHoldUntil = Date.distantPast
     /// True while the reader window owns the shared engine's single stream.
     private var readerStreaming = false
 
@@ -364,12 +366,46 @@ final class ReaderController: NSObject, NSWindowDelegate {
                 value: NSUnderlineStyle.single.rawValue,
                 forCharacterRange: current.range
             )
-            textView.scrollRangeToVisible(current.range)
+            autoScroll(to: current.range)
             union = union.union(current.range)
         }
 
         lastHighlighted = union
         highlighted = union.length > 0
+    }
+
+    // MARK: - Auto-scroll
+
+    /// The reader window scrolls natively: once the current sentence reaches
+    /// the lower third, animate so it sits about a third from the top.
+    private func autoScroll(to range: NSRange) {
+        guard Date() >= manualScrollHoldUntil,
+              let textView,
+              let container = textView.textContainer,
+              let layoutManager = textView.layoutManager,
+              let clipView = textView.enclosingScrollView?.contentView else { return }
+
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let bounding = layoutManager.boundingRect(forGlyphRange: glyphRange, in: container)
+        let origin = textView.textContainerOrigin
+        let visible = textView.visibleRect
+
+        guard let pixels = AutoScrollPlanner.scrollDownPixels(
+            sentenceTop: bounding.minY + origin.y - visible.minY,
+            sentenceBottom: bounding.maxY + origin.y - visible.minY,
+            viewportHeight: visible.height
+        ), pixels > 0 else { return }
+
+        let newOrigin = NSPoint(x: clipView.bounds.origin.x, y: clipView.bounds.origin.y + pixels)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.allowsImplicitAnimation = true
+            clipView.animator().setBoundsOrigin(newOrigin)
+        }
+    }
+
+    func userDidScroll() {
+        manualScrollHoldUntil = Date().addingTimeInterval(1.5)
     }
 
     // MARK: - NSWindowDelegate
@@ -393,6 +429,11 @@ private extension NSRange {
 
 final class ReaderContainerView: NSView {
     weak var controller: ReaderController?
+
+    override func scrollWheel(with event: NSEvent) {
+        controller?.userDidScroll()
+        super.scrollWheel(with: event)
+    }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         fileURL(from: sender) != nil ? .copy : []

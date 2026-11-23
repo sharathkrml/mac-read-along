@@ -27,6 +27,10 @@ final class SessionController {
     private var lastThumb: [UInt8]?
     private var lastFrameSize: CGSize?
     private var recaptureTask: Task<Void, Never>?
+    /// Manual scrolling suppresses auto-scroll until it settles.
+    private var manualScrollHoldUntil = Date.distantPast
+    /// Recaptures right after our own scroll are self-inflicted, not manual.
+    private var lastAutoScrollAt = Date.distantPast
 
     init(engine: SpeechEngine) {
         self.engine = engine
@@ -121,10 +125,15 @@ final class SessionController {
         guard case .active = self.state else { return }
         switch state {
         case .listening:
-            if surface?.sentences.isEmpty != false {
+            switch surface?.sentences.isEmpty {
+            case false?:
+                overlay.setNotice(AutoScroller.isAvailable
+                    ? nil
+                    : "Auto-scroll needs Accessibility — reading still works")
+            case true?:
                 overlay.setNotice("No readable text found in this window")
-            } else {
-                overlay.setNotice(nil)
+            default:
+                overlay.setNotice("Reading the window…")
             }
         case .failed(let message):
             overlay.setNotice(message)
@@ -166,6 +175,12 @@ final class SessionController {
         guard contentChanged || resized else { return }
         lastThumb = frame.thumb
 
+        // A content change we did not just cause ourselves is the reader
+        // scrolling manually: back off from auto-scroll while it settles.
+        if contentChanged, !force, Date() > lastAutoScrollAt.addingTimeInterval(0.9) {
+            manualScrollHoldUntil = Date().addingTimeInterval(2.5)
+        }
+
         let newSurface = SurfaceBuilder.build(lines: frame.lines)
         surface = newSurface
 
@@ -195,9 +210,38 @@ final class SessionController {
         }
 
         let cursor = tracker.cursor
+        let currentRects = rects(at: cursor)
         overlay.setHighlights(HighlightRects(
-            current: rects(at: cursor),
+            current: currentRects,
             next: rects(at: (cursor ?? -1) + 1)
         ))
+        autoScrollIfNeeded(currentRects)
+    }
+
+    // MARK: - Auto-scroll
+
+    private func autoScrollIfNeeded(_ rects: [CGRect]) {
+        guard !rects.isEmpty,
+              case .active(let windowID) = state,
+              Date() >= manualScrollHoldUntil,
+              AutoScroller.isAvailable,
+              let target = WindowInfo.current(windowID: windowID),
+              target.ownerPID > 0 else { return }
+        let union = rects.dropFirst().reduce(rects[0], { CGRectUnion($0, $1) })
+
+        // Normalized rects use Vision's bottom-left origin; the planner wants
+        // top-down distances from the top of the window.
+        let height = target.frame.height
+        let sentenceTop = (1 - union.maxY) * height
+        let sentenceBottom = (1 - union.minY) * height
+
+        guard let pixels = AutoScrollPlanner.scrollDownPixels(
+            sentenceTop: sentenceTop,
+            sentenceBottom: sentenceBottom,
+            viewportHeight: height
+        ), pixels > 0 else { return }
+
+        lastAutoScrollAt = Date()
+        AutoScroller.scroll(downPixels: pixels, pid: target.ownerPID)
     }
 }
