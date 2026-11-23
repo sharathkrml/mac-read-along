@@ -266,12 +266,55 @@ final class SessionController {
             } ?? "nil"
             Log.note("cursor: \(detail)")
         }
-        let currentRects = rects(at: cursor)
+
+        let groups = wordGroups(for: cursor, in: surface)
         overlay.setHighlights(HighlightRects(
-            current: currentRects,
-            next: rects(at: (cursor ?? -1) + 1)
+            current: groups.current.isEmpty ? rects(at: cursor) : groups.current,
+            next: groups.current.isEmpty ? rects(at: (cursor ?? -1) + 1) : groups.next,
+            word: groups.word
         ))
-        autoScrollIfNeeded(currentRects)
+        autoScrollIfNeeded(rects(at: cursor))
+    }
+
+    /// The three-word group under the voice, the next group, and the exact
+    /// word. Empty when OCR gave no word geometry, so `render` can fall back
+    /// to the whole-sentence rectangles.
+    private func wordGroups(
+        for cursor: Int?,
+        in surface: Surface
+    ) -> (current: [CGRect], next: [CGRect], word: [CGRect]) {
+        guard let cursor,
+              surface.sentences.indices.contains(cursor),
+              surface.wordRects.indices.contains(cursor),
+              let window = WordWindow.around(
+                  wordCursor: tracker.wordCursor,
+                  wordCount: surface.sentences[cursor].words.count
+              ) else { return ([], [], []) }
+
+        let boxes = surface.wordRects[cursor]
+        guard !boxes.isEmpty else { return ([], [], []) }
+
+        func bands(_ rects: [CGRect], _ range: Range<Int>) -> [CGRect] {
+            HighlightBands.merge(range.compactMap {
+                rects.indices.contains($0) ? rects[$0] : nil
+            })
+        }
+
+        var next = bands(boxes, window.next)
+        // At the end of a sentence the weak cue points at the next sentence's
+        // first group instead of disappearing.
+        if window.next.isEmpty, surface.wordRects.indices.contains(cursor + 1) {
+            let following = surface.wordRects[cursor + 1]
+            if let first = WordWindow.around(wordCursor: nil, wordCount: following.count)?.current {
+                next = bands(following, first)
+            }
+        }
+
+        return (
+            bands(boxes, window.current),
+            next,
+            boxes.indices.contains(window.word) ? [boxes[window.word]] : []
+        )
     }
 
     // MARK: - Auto-scroll

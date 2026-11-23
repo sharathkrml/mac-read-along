@@ -1,21 +1,34 @@
 import Foundation
 import CoreGraphics
 
+/// One recognized word of a line: its range within the line's text and its own
+/// normalized rectangle, used for the word-level highlight (ADR-0005).
+struct OCRWord: Equatable, Sendable {
+    let range: NSRange
+    let rect: CGRect
+}
+
 /// One recognized visual line of an external window, positioned in the
 /// window's own space, normalized to 0…1 with the origin at the window's
 /// bottom-left corner (Vision's bounding-box convention).
 struct OCRLine: Equatable, Sendable {
     let text: String
     let rect: CGRect
+    /// Word boxes within `text`; empty when Vision could not produce them.
+    var words: [OCRWord] = []
 }
 
-/// A reading surface rebuilt from an OCR frame: tracker sentences plus, per
-/// sentence, the visual line rectangles it spans (ADR-0001).
+/// A reading surface rebuilt from an OCR frame: tracker sentences plus the
+/// rectangles the overlay paints (ADR-0001, ADR-0005).
 struct Surface: Equatable, Sendable {
     let sentences: [Sentence]
     /// rects[sentenceIndex] holds the normalized window-local rectangles of
     /// the lines that sentence spans.
     let rects: [[CGRect]]
+    /// wordRects[sentenceIndex][wordIndex] is that word's rectangle, aligned
+    /// with `sentences[sentenceIndex].words`; empty when word geometry is
+    /// unavailable and the overlay must fall back to line rects.
+    let wordRects: [[CGRect]]
 }
 
 /// Whether the tracked window reads as a light or dark surface. The overlay
@@ -38,10 +51,11 @@ enum SurfaceBuilder {
         // Sentences must not run across a gutter: joining columns made speech
         // match one giant sentence with rectangles all over the window.
         let blocks = columnBlocks(lines)
-        guard !blocks.isEmpty else { return Surface(sentences: [], rects: []) }
+        guard !blocks.isEmpty else { return Surface(sentences: [], rects: [], wordRects: []) }
 
         var sentences: [Sentence] = []
         var rects: [[CGRect]] = []
+        var wordRects: [[CGRect]] = []
 
         for block in blocks {
             let ordered = orderLines(block)
@@ -50,6 +64,7 @@ enum SurfaceBuilder {
 
             var text = ""
             var spans: [(range: NSRange, rect: CGRect)] = []
+            var wordSpans: [(range: NSRange, rect: CGRect)] = []
             var previous: OCRLine?
             for line in ordered {
                 // Space joins a wrapped line into the same sentence; newline
@@ -66,6 +81,12 @@ enum SurfaceBuilder {
                     NSRange(location: location, length: (line.text as NSString).length),
                     line.rect
                 ))
+                wordSpans += line.words.map { word in
+                    (
+                        NSRange(location: location + word.range.location, length: word.range.length),
+                        word.rect
+                    )
+                }
                 previous = line
             }
 
@@ -74,9 +95,15 @@ enum SurfaceBuilder {
                 rects.append(spans.compactMap { span in
                     NSIntersectionRange(sentence.range, span.range).length > 0 ? span.rect : nil
                 })
+                let boxes = wordSpans.compactMap { span in
+                    NSIntersectionRange(sentence.range, span.range).length > 0 ? span.rect : nil
+                }
+                // Only trust word geometry when it lines up one-to-one with the
+                // sentence's words; otherwise the overlay uses the line rects.
+                wordRects.append(boxes.count == sentence.words.count ? boxes : [])
             }
         }
-        return Surface(sentences: sentences, rects: rects)
+        return Surface(sentences: sentences, rects: rects, wordRects: wordRects)
     }
 
     /// Whether `line` looks like the next wrapped line of `previous`'s

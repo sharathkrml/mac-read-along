@@ -25,6 +25,14 @@ final class SentenceIndexTests: XCTestCase {
         )
     }
 
+    func testWordRangesKeepApostrophesInsideWords() {
+        let text = "Hello, world's 42 — don't stop."
+        XCTAssertEqual(
+            SentenceIndex.wordRanges(in: text).map { String(text[$0]) },
+            ["Hello", "world's", "42", "don't", "stop"]
+        )
+    }
+
     func testEmptyTextHasNoSentences() {
         XCTAssertTrue(SentenceIndex.sentences(in: "").isEmpty)
     }

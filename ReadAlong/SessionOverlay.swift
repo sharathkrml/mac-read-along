@@ -5,6 +5,8 @@ import AppKit
 struct HighlightRects: Equatable {
     var current: [CGRect] = []
     var next: [CGRect] = []
+    /// The exact word under the voice; drawn with dots below the group rule.
+    var word: [CGRect] = []
 }
 
 /// A click-through overlay over the picked window while a session is active:
@@ -178,26 +180,25 @@ final class OverlayView: NSView {
     /// its bottom-left, Vision's convention); scale them into screen space.
     private func drawHighlights(_ highlights: HighlightRects, in window: CGRect) {
         let palette = HighlightPalette(tone: tone)
-        for rect in highlights.next {
-            drawHighlight(
-                rect: scaled(rect, to: window).offsetBy(
-                    dx: -screenFrame.origin.x,
-                    dy: -screenFrame.origin.y
-                ),
-                fill: palette.nextFill,
-                underline: palette.nextUnderline
-            )
+        let next = highlights.next.map { place($0, in: window) }
+        let current = highlights.current.map { place($0, in: window) }
+        for rect in next {
+            drawHighlight(rect: rect, fill: palette.nextFill, underline: palette.nextUnderline)
         }
-        for rect in highlights.current {
-            drawHighlight(
-                rect: scaled(rect, to: window).offsetBy(
-                    dx: -screenFrame.origin.x,
-                    dy: -screenFrame.origin.y
-                ),
-                fill: palette.currentFill,
-                underline: palette.currentUnderline
-            )
+        for rect in current {
+            drawHighlight(rect: rect, fill: palette.currentFill, underline: palette.currentUnderline)
         }
+        for rect in highlights.word.map({ place($0, in: window) }) {
+            let band = current.first { $0.intersects(rect) } ?? rect
+            drawWordMarker(rect: rect, band: band, palette: palette)
+        }
+    }
+
+    private func place(_ rect: CGRect, in window: CGRect) -> CGRect {
+        scaled(rect, to: window).offsetBy(
+            dx: -screenFrame.origin.x,
+            dy: -screenFrame.origin.y
+        )
     }
 
     /// A low-alpha wash plus a bottom rule: the sentence reads as highlighted
@@ -217,6 +218,30 @@ final class OverlayView: NSView {
         )
         underline.setFill()
         NSBezierPath(roundedRect: rule, xRadius: thickness / 2, yRadius: thickness / 2).fill()
+    }
+
+    /// The exact word gets a deeper wash and a dotted rule below the group's
+    /// solid rule: precise enough to follow the voice, quiet enough to leave
+    /// the glyphs alone.
+    private func drawWordMarker(rect: CGRect, band: CGRect, palette: HighlightPalette) {
+        let radius = min(4, rect.height / 2)
+        palette.wordFill.setFill()
+        NSBezierPath(
+            roundedRect: rect.insetBy(dx: -1, dy: -1),
+            xRadius: radius,
+            yRadius: radius
+        ).fill()
+
+        let thickness = max(1.5, min(3, rect.height * 0.12))
+        let y = band.minY - thickness - 3
+        let dots = NSBezierPath()
+        dots.move(to: CGPoint(x: rect.minX + thickness / 2, y: y))
+        dots.line(to: CGPoint(x: rect.maxX - thickness / 2, y: y))
+        dots.lineWidth = thickness
+        dots.lineCapStyle = .round
+        dots.setLineDash([0.5, thickness * 2], count: 2, phase: 0)
+        palette.wordDots.setStroke()
+        dots.stroke()
     }
 
     private func scaled(_ rect: CGRect, to window: CGRect) -> CGRect {
@@ -254,6 +279,8 @@ private struct HighlightPalette {
     let currentUnderline: NSColor
     let nextFill: NSColor
     let nextUnderline: NSColor
+    let wordFill: NSColor
+    let wordDots: NSColor
 
     init(tone: SurfaceTone) {
         switch tone {
@@ -262,11 +289,15 @@ private struct HighlightPalette {
             currentUnderline = ReaderTheme.amber.withAlphaComponent(0.95)
             nextFill = ReaderTheme.amber.withAlphaComponent(0.05)
             nextUnderline = ReaderTheme.amber.withAlphaComponent(0.35)
+            wordFill = ReaderTheme.amber.withAlphaComponent(0.12)
+            wordDots = ReaderTheme.amberDeep
         case .dark:
             currentFill = ReaderTheme.amber.withAlphaComponent(0.22)
             currentUnderline = ReaderTheme.amber.withAlphaComponent(0.90)
             nextFill = NSColor.white.withAlphaComponent(0.06)
             nextUnderline = NSColor.white.withAlphaComponent(0.28)
+            wordFill = ReaderTheme.amber.withAlphaComponent(0.12)
+            wordDots = ReaderTheme.amberSoft
         }
     }
 }

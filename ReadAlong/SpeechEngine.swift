@@ -59,6 +59,11 @@ final class SpeechEngine {
     /// Which consumer opened the microphone stream, so onboarding can shut
     /// down its test without killing a live session.
     private(set) var streamOwner: ObjectIdentifier?
+    /// The sidecar's hard ceiling: the model needs about 2.5 GB, so anything
+    /// near this means the allocator is running away and the machine is about
+    /// to swap. The MLX cache cap keeps normal use far below it.
+    private static let serverMemoryLimit: UInt64 = 6 * 1_073_741_824
+    private var memoryWatchdog: Task<Void, Never>?
 
     /// Installs and starts the sidecar without touching the microphone —
     /// the onboarding engine step.
@@ -196,10 +201,54 @@ final class SpeechEngine {
 
     func shutdown() {
         stop()
+        // The app is quitting: take the sidecar with it, even if it is
+        // mid-decode, instead of leaving an orphan to be reaped next launch.
         if let server, server.isRunning {
-            server.terminate()
+            kill(server.processIdentifier, SIGKILL)
         }
         server = nil
+    }
+
+    /// Watches the sidecar's physical footprint, which includes the Metal
+    /// buffers `ps` RSS misses. A runaway allocator gets the engine restarted
+    /// before it can take the machine down; normal use stays around 2 GB.
+    private func startMemoryWatchdog() {
+        guard memoryWatchdog == nil else { return }
+        memoryWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                self?.enforceServerMemory()
+            }
+        }
+    }
+
+    private func enforceServerMemory() {
+        guard let server, server.isRunning,
+              let footprint = Self.physicalFootprint(of: server.processIdentifier),
+              footprint > Self.serverMemoryLimit else { return }
+        Log.note("speech engine at \(footprint / 1_073_741_824) GB; restarting")
+        let owner = streamOwner
+        let wasListening = state == .listening
+        stop()
+        kill(server.processIdentifier, SIGKILL)
+        self.server = nil
+        guard wasListening, let owner else { return }
+        Task { @MainActor [weak self] in
+            try? await self?.start(owner: owner)
+        }
+    }
+
+    /// Physical footprint in bytes, including Metal/IOAccelerator memory that
+    /// `ps` and `proc_pidinfo` leave out. Flavor V2 exists on every supported
+    /// macOS and still carries `ri_phys_footprint`.
+    nonisolated static func physicalFootprint(of pid: pid_t) -> UInt64? {
+        var info = rusage_info_v2()
+        let status = withUnsafeMutablePointer(to: &info) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { rebound in
+                proc_pid_rusage(pid, RUSAGE_INFO_V2, rebound)
+            }
+        }
+        return status == 0 ? info.ri_phys_footprint : nil
     }
 
     // MARK: - Runtime
@@ -317,10 +366,13 @@ final class SpeechEngine {
     /// of them piled up and exhausted memory on a 16 GB machine, taking
     /// WindowServer down with it. Reap every engine this install started
     /// except the one this app owns.
-    private func reapOrphanedServers(binary: URL) async {
+    private func reapOrphanedServers() async {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-f", binary.path + " serve"]
+        // No spaces in the pattern: pgrep -f matches unreliably when the
+        // pattern has them. The venv path is in every engine command line,
+        // old (`<venv>/bin/fermion serve`) or new (`<venv>/bin/python -c …`).
+        process.arguments = ["-f", "ReadAlong/venv"]
         let output = Pipe()
         process.standardOutput = output
         do { try process.run() } catch { return }
@@ -343,8 +395,29 @@ final class SpeechEngine {
         }
     }
 
+    /// How to boot the sidecar. MLX keeps freed Metal buffers in a cache that
+    /// defaults to the whole memory limit; live re-decodes grew one server to
+    /// ~11 GB on a 16 GB machine. Starting the venv's Python with a small
+    /// cache cap keeps the same decoder inside a few GB; a binary outside a
+    /// virtualenv falls back to the plain launcher.
+    nonisolated static func serverLaunch(
+        binary: URL,
+        model: String,
+        port: Int
+    ) -> (executable: URL, arguments: [String]) {
+        let bin = binary.deletingLastPathComponent()
+        let venv = bin.deletingLastPathComponent()
+        let python = bin.appendingPathComponent("python")
+        guard FileManager.default.fileExists(atPath: venv.appendingPathComponent("pyvenv.cfg").path),
+              FileManager.default.isExecutableFile(atPath: python.path) else {
+            return (binary, ["serve", model, "--port", String(port)])
+        }
+        let bootstrap = "import sys, mlx.core as mx; mx.set_cache_limit(384*1024*1024); from fermion.cli import main; sys.exit(main())"
+        return (python, ["-c", bootstrap, "serve", model, "--port", String(port)])
+    }
+
     private func ensureServer(binary: URL) async throws {
-        await reapOrphanedServers(binary: binary)
+        await reapOrphanedServers()
         if await isHealthy() { return }
 
         if let server, server.isRunning {
@@ -365,8 +438,9 @@ final class SpeechEngine {
         Log.note("starting speech engine on port \(port)")
 
         let process = Process()
-        process.executableURL = binary
-        process.arguments = ["serve", model, "--port", String(port)]
+        let launch = Self.serverLaunch(binary: binary, model: model, port: port)
+        process.executableURL = launch.executable
+        process.arguments = launch.arguments
         let pipe = Pipe()
         process.standardError = pipe
         process.standardOutput = pipe
@@ -389,6 +463,7 @@ final class SpeechEngine {
             throw SpeechEngineError.fermionMissing
         }
         server = process
+        startMemoryWatchdog()
 
         let deadline = Date().addingTimeInterval(300)
         while Date() < deadline {

@@ -90,7 +90,24 @@ enum WindowCapture {
         var lines: [OCRLine] = []
         for observation in request.results ?? [] {
             guard let candidate = observation.topCandidates(1).first else { continue }
-            lines.append(OCRLine(text: candidate.string, rect: observation.boundingBox))
+            var words: [OCRWord] = []
+            for range in SentenceIndex.wordRanges(in: candidate.string) {
+                guard let box = try? candidate.boundingBox(for: range) else {
+                    // Partial word geometry would misalign every later word;
+                    // drop it for the whole line and fall back to line rects.
+                    words = []
+                    break
+                }
+                words.append(OCRWord(
+                    range: NSRange(range, in: candidate.string),
+                    rect: box.boundingBox
+                ))
+            }
+            lines.append(OCRLine(
+                text: candidate.string,
+                rect: observation.boundingBox,
+                words: words
+            ))
         }
         return lines
     }

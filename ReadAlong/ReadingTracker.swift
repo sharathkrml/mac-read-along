@@ -6,6 +6,9 @@ import Foundation
 final class ReadingTracker {
     private(set) var sentences: [Sentence] = []
     private(set) var cursor: Int?
+    /// Index into the current sentence's words of the word the reader is on.
+    /// Alignment only: it feeds the overlay and never moves `cursor` (ADR-0005).
+    private(set) var wordCursor: Int?
     var onChange: (() -> Void)?
 
     private var committedWords: [String] = []
@@ -24,6 +27,7 @@ final class ReadingTracker {
     func load(sentences: [Sentence]) {
         self.sentences = sentences
         cursor = nil
+        wordCursor = nil
         committedWords = []
         partialWords = []
         onChange?()
@@ -31,6 +35,7 @@ final class ReadingTracker {
 
     func resetPosition() {
         cursor = nil
+        wordCursor = nil
         committedWords = []
         partialWords = []
         onChange?()
@@ -41,10 +46,12 @@ final class ReadingTracker {
     /// relocate (ADR-0003).
     func reload(_ newSentences: [Sentence]) {
         let previous = currentSentence
+        let previousWord = wordCursor
         sentences = newSentences
         cursor = previous.flatMap { old in
             newSentences.firstIndex { $0.words == old.words }
         }
+        wordCursor = cursor.flatMap { _ in previousWord }
         onChange?()
     }
 
@@ -53,7 +60,9 @@ final class ReadingTracker {
     func moveCursor(by delta: Int) {
         guard !sentences.isEmpty else { return }
         let base = cursor ?? (delta > 0 ? -1 : 0)
-        setCursor(min(max(base + delta, 0), sentences.count - 1))
+        if setCursor(min(max(base + delta, 0), sentences.count - 1)) {
+            onChange?()
+        }
     }
 
     func handle(_ update: TranscriptUpdate) {
@@ -67,7 +76,14 @@ final class ReadingTracker {
         } else {
             partialWords = incoming
         }
+
+        let previousCursor = cursor
+        let previousWord = wordCursor
         advance()
+        refreshWordCursor()
+        if cursor != previousCursor || wordCursor != previousWord {
+            onChange?()
+        }
     }
 
     private struct Candidate {
@@ -155,10 +171,57 @@ final class ReadingTracker {
         return false
     }
 
-    private func setCursor(_ index: Int) {
-        guard cursor != index else { return }
+    @discardableResult
+    private func setCursor(_ index: Int) -> Bool {
+        guard cursor != index else { return false }
         cursor = index
-        onChange?()
+        wordCursor = nil
+        return true
+    }
+
+    /// After the sentence cursor settles, place the word marker on the last
+    /// word of the longest spoken tail that appears in the current sentence.
+    /// Only moves when alignment finds something, so a pause holds the marker.
+    private func refreshWordCursor() {
+        guard let sentence = currentSentence, !sentence.words.isEmpty else {
+            wordCursor = nil
+            return
+        }
+        let spoken = Array((committedWords + partialWords).suffix(40))
+        guard let end = alignment(of: sentence.words, tail: Array(spoken.suffix(8)), near: wordCursor) else {
+            return
+        }
+        wordCursor = end
+    }
+
+    /// End index of the longest suffix of `tail` that appears contiguously in
+    /// `words`, preferring a forward occurrence near `near` so a repeated word
+    /// does not yank the marker back toward the start of the sentence.
+    private func alignment(of words: [String], tail: [String], near: Int?) -> Int? {
+        let maximum = min(8, tail.count, words.count)
+        guard maximum > 0 else { return nil }
+        let anchor = near ?? 0
+
+        for length in stride(from: maximum, through: 1, by: -1) {
+            let needle = Array(tail.suffix(length))
+            var forward: Int?
+            var nearest: Int?
+            for start in 0...(words.count - length) {
+                guard (0..<length).allSatisfy({
+                    Self.fuzzyEqual(needle[$0], words[start + $0])
+                }) else { continue }
+                let end = start + length - 1
+                if nearest.map({ abs(end - anchor) < abs($0 - anchor) }) ?? true {
+                    nearest = end
+                }
+                if end >= anchor,
+                   forward.map({ abs(end - anchor) < abs($0 - anchor) }) ?? true {
+                    forward = end
+                }
+            }
+            if let found = forward ?? nearest { return found }
+        }
+        return nil
     }
 
     static func fuzzyEqual(_ left: String, _ right: String) -> Bool {

@@ -176,6 +176,84 @@ final class ReadingTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.cursor, 3)
     }
 
+    // MARK: - Word marker (display only)
+
+    func testWordMarkerFollowsTheVoiceInsideTheSentence() {
+        let tracker = makeTracker(["Alpha beta gamma delta epsilon zeta eta theta"])
+
+        say(tracker, "alpha beta gamma")
+        XCTAssertEqual(tracker.cursor, 0)
+        XCTAssertEqual(tracker.wordCursor, 2)
+
+        say(tracker, "alpha beta gamma delta epsilon")
+        XCTAssertEqual(tracker.cursor, 0)
+        XCTAssertEqual(tracker.wordCursor, 4)
+    }
+
+    /// The marker may move on a single word; the sentence cursor must not.
+    func testSingleWordMovesTheMarkerButNotTheCursor() {
+        let tracker = makeTracker(fiveSentences)
+        say(tracker, "alpha beta gamma")
+        say(tracker, "delta")
+
+        XCTAssertEqual(tracker.cursor, 0)
+        XCTAssertEqual(tracker.wordCursor, 3)
+    }
+
+    func testWordMarkerResetsWhenTheSentenceAdvances() {
+        let tracker = makeTracker(["Alpha beta gamma delta", "Epsilon zeta eta theta"])
+        say(tracker, "alpha beta gamma")
+        say(tracker, "alpha beta gamma delta")
+
+        XCTAssertEqual(tracker.cursor, 1)
+        XCTAssertNil(tracker.wordCursor)
+
+        say(tracker, "epsilon zeta")
+        XCTAssertEqual(tracker.wordCursor, 1)
+    }
+
+    func testRelocationPlacesTheMarkerOnTheMatchedWords() {
+        let tracker = makeTracker([
+            "Alpha beta gamma delta",
+            "Epsilon zeta eta theta mu",
+        ])
+        say(tracker, "alpha beta gamma")
+        say(tracker, "zeta eta theta")
+
+        XCTAssertEqual(tracker.cursor, 1)
+        XCTAssertEqual(tracker.wordCursor, 3)
+    }
+
+    /// A lone repeated word ("and") should sit at the next occurrence, not
+    /// spring back to the one already read.
+    func testRepeatedWordsPreferForwardProgress() {
+        let tracker = makeTracker(["Alpha beta gamma and delta and epsilon"])
+        say(tracker, "alpha beta gamma and delta")
+        XCTAssertEqual(tracker.wordCursor, 4)
+
+        say(tracker, "and")
+        XCTAssertEqual(tracker.wordCursor, 5)
+    }
+
+    func testManualMoveDropsTheOldWordMarker() {
+        let tracker = makeTracker(fiveSentences)
+        say(tracker, "alpha beta gamma")
+        XCTAssertEqual(tracker.wordCursor, 2)
+
+        tracker.moveCursor(by: 1)
+        XCTAssertNil(tracker.wordCursor)
+    }
+
+    func testReloadKeepsTheWordMarker() {
+        let tracker = makeTracker(["Alpha beta gamma delta epsilon"])
+        say(tracker, "alpha beta gamma delta epsilon")
+        XCTAssertEqual(tracker.wordCursor, 4)
+
+        tracker.reload(makeSentences(["Alpha beta gamma delta epsilon"]))
+        XCTAssertEqual(tracker.cursor, 0)
+        XCTAssertEqual(tracker.wordCursor, 4)
+    }
+
     // MARK: - Manual movement
 
     func testMoveCursorStepsAndClamps() {

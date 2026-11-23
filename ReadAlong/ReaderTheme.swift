@@ -25,6 +25,8 @@ enum ReaderTheme {
     // Accent
     static let amber = NSColor(hex: 0xF5A93B)
     static let amberSoft = NSColor(hex: 0xFFD28A)
+    /// Amber dark enough to read on white paper.
+    static let amberDeep = NSColor(hex: 0xB5730E)
     static let inkOnAmber = NSColor(hex: 0x1A1206)
 
     // Data accents

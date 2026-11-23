@@ -34,13 +34,39 @@ enum SentenceIndex {
         return result
     }
 
+    /// Word tokens with their ranges: letters and digits form a word,
+    /// apostrophes stay inside it, everything else splits. OCR word boxes and
+    /// sentence words must agree, so both go through this one rule.
+    static func wordRanges(in string: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var start: String.Index?
+        var index = string.startIndex
+
+        while index < string.endIndex {
+            let character = string[index]
+            let isWordCharacter = character.isLetter || character.isNumber
+                || character == "'" || character == "’"
+            if isWordCharacter {
+                if start == nil { start = index }
+            } else if let wordStart = start {
+                ranges.append(wordStart..<index)
+                start = nil
+            }
+            index = string.index(after: index)
+        }
+        if let wordStart = start {
+            ranges.append(wordStart..<string.endIndex)
+        }
+        return ranges
+    }
+
     static func words(in string: String) -> [String] {
-        string
-            .lowercased()
-            .replacingOccurrences(of: "'", with: "")
-            .replacingOccurrences(of: "’", with: "")
-            .split { !$0.isLetter && !$0.isNumber }
-            .map(String.init)
+        wordRanges(in: string).map { range in
+            String(string[range])
+                .lowercased()
+                .replacingOccurrences(of: "'", with: "")
+                .replacingOccurrences(of: "’", with: "")
+        }
     }
 
     private static func fallbackSentences(in text: String) -> [Sentence] {

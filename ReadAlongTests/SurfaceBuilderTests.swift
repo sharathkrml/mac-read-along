@@ -4,7 +4,22 @@ import XCTest
 @MainActor
 final class SurfaceBuilderTests: XCTestCase {
     private func line(_ text: String, x: CGFloat, y: CGFloat, w: CGFloat = 0.8, h: CGFloat = 0.02) -> OCRLine {
-        OCRLine(text: text, rect: CGRect(x: x, y: y, width: w, height: h))
+        let words = SentenceIndex.wordRanges(in: text).enumerated().map { offset, range in
+            OCRWord(
+                range: NSRange(range, in: text),
+                rect: CGRect(
+                    x: x + CGFloat(offset) * 0.08,
+                    y: y + h * 0.15,
+                    width: 0.075,
+                    height: h * 0.7
+                )
+            )
+        }
+        return OCRLine(
+            text: text,
+            rect: CGRect(x: x, y: y, width: w, height: h),
+            words: words
+        )
     }
 
     func testBuildsSentencesWithTheirLineRects() {
@@ -74,6 +89,44 @@ final class SurfaceBuilderTests: XCTestCase {
         XCTAssertEqual(surface.rects[0].count, 1)
         XCTAssertEqual(surface.rects[1].count, 1)
         XCTAssertEqual(surface.rects[0], surface.rects[1])
+        XCTAssertEqual(surface.wordRects[0].count, 2)
+        XCTAssertEqual(surface.wordRects[1].count, 2)
+    }
+
+    // MARK: - Word geometry (ADR-0005)
+
+    func testSentenceGetsOneRectPerWord() {
+        let surface = SurfaceBuilder.build(lines: [
+            line("The quick brown fox.", x: 0.1, y: 0.90),
+        ])
+
+        XCTAssertEqual(surface.sentences[0].words, ["the", "quick", "brown", "fox"])
+        XCTAssertEqual(surface.wordRects[0].count, 4)
+        XCTAssertEqual(surface.wordRects[0][1].minX, 0.18, accuracy: 0.0001)
+    }
+
+    func testSentenceSpanningLinesKeepsWordOrder() {
+        let surface = SurfaceBuilder.build(lines: [
+            line("The quick brown fox jumps over", x: 0.1, y: 0.90),
+            line("the lazy dog.", x: 0.1, y: 0.88),
+        ])
+
+        XCTAssertEqual(surface.sentences.count, 1)
+        XCTAssertEqual(surface.wordRects[0].count, 9)
+        XCTAssertEqual(surface.wordRects[0].count, surface.sentences[0].words.count)
+        XCTAssertLessThan(surface.wordRects[0][6].minY, 0.89)
+    }
+
+    func testMissingWordBoxesFallBackToLineRects() {
+        let surface = SurfaceBuilder.build(lines: [
+            OCRLine(
+                text: "Hello there.",
+                rect: CGRect(x: 0.1, y: 0.9, width: 0.4, height: 0.02)
+            ),
+        ])
+
+        XCTAssertEqual(surface.sentences.count, 1)
+        XCTAssertTrue(surface.wordRects[0].isEmpty)
     }
 
     func testUnorderedLinesAreReadTopToBottomLeftToRight() {
