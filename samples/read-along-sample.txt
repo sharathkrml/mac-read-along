@@ -1,0 +1,7 @@
+Reading is one of the quietest ways to learn something new, and it deserves a surface that stays out of the way. When your eyes move across a page, the hardest part is often not the words themselves but keeping your place among them. A single distraction is enough to send you back three sentences, then four, then to the top of the paragraph again.
+
+This sample exists so you can try the reader without hunting for a document. Open it, press Listen, and read the next few sentences aloud at whatever pace feels natural. The reading cursor should follow the sentence you are speaking, with the next sentence waiting quietly ahead of you.
+
+If you skip ahead, say a phrase from a later sentence and the cursor will move there. If you re-read something, it will come back with you. A single stray word should never pull the highlight away, and silence should leave it exactly where you stopped.
+
+When you finish a sentence, the highlight should step forward on its own. That small movement is the whole promise of the app: you can look away, come back, and see precisely where you were.

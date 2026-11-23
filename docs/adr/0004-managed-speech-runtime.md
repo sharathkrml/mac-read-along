@@ -1,0 +1,3 @@
+# The app manages its own speech runtime and downloads the model during onboarding
+
+The app creates a private Python environment for the Phonon sidecar on first launch (`uv` plus `fermion-research[mlx]` under Application Support) and starts `fermion serve phonon-2`, surfacing the model download as a "Downloading model" step in onboarding until the server's `/health` responds. Chosen over a manual `uv tool install` because the product flow starts with installing the app and reading, and over bundling a Python runtime because v1 is personal-first. Consequence: shipping to other machines later means bundling the runtime or moving to the native CoreML package, and the app must supervise and restart the sidecar.

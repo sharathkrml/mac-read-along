@@ -1,0 +1,3 @@
+# Highlights are drawn in place over the reading surface
+
+The app attaches to the window the reader is reading and draws translucent highlight rectangles over that window's sentences, rather than showing a copy of the text in its own panel. Keeps the browser/editor context, lets the app scroll the real page, and works with any app that displays text; the cost is screen capture, OCR to recover line geometry, synthesized scrolling, and the Screen Recording permission. Rejected: a floating panel mirroring the text — simpler and permission-light, but the reader would read from a duplicate of the page instead of the page itself.
