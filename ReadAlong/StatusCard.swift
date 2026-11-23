@@ -41,16 +41,17 @@ enum Permissions {
     }
 }
 
-/// The floating session card: state, model, stop. Draggable, non-activating,
+/// The floating session widget: state, model, stop. Draggable, non-activating,
 /// restorable from the menu bar while a session runs.
 @MainActor
 final class StatusCard {
     private var panel: StatusPanel?
-    private let dot = StatusDot()
-    private let statusLabel = NSTextField(labelWithString: "Starting…")
-    private let modelLabel = NSTextField(labelWithString: "")
-    private let stopButton = CallbackButton(title: "Stop")
-    private let retryButton = CallbackButton(title: "Retry")
+    private let activity = ActivityBars()
+    private let stateMicro = Widget.microLabel("PAUSED")
+    private let bigLabel = Widget.displayLabel("Paused", size: 24, weight: .light, color: ReaderTheme.textSecondary)
+    private let detail = Widget.microLabel("PHONON-2 · ENGLISH", size: 9)
+    private let stopButton = PillButton("Stop", kind: .primary)
+    private let retryButton = PillButton("Retry", kind: .secondary)
 
     var onStop: (() -> Void)? {
         didSet { stopButton.onPress = onStop }
@@ -67,12 +68,22 @@ final class StatusCard {
         }
         guard let panel else { return }
 
-        let width: CGFloat = 300
-        let height: CGFloat = 58
+        let width: CGFloat = 340
+        let height: CGFloat = 104
         let x = max(frame.minX + 16, frame.maxX - width - 24)
-        let y = max(frame.minY + 16, frame.maxY - height - 48)
+        let y = max(frame.minY + 16, frame.maxY - height - 36)
         panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+
+        let firstShow = !panel.isVisible
         panel.orderFrontRegardless()
+        if firstShow {
+            panel.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+            }
+        }
     }
 
     func hide() {
@@ -81,31 +92,47 @@ final class StatusCard {
 
     /// The card mirrors engine state; failures offer retry, idle means paused.
     func update(state: SpeechEngineState, model: String) {
-        modelLabel.stringValue = model
+        let modelMicro = "\(model.uppercased()) · ENGLISH"
         switch state {
         case .idle:
-            dot.color = ReaderTheme.textSecondary
-            statusLabel.stringValue = "Paused"
+            activity.isActive = false
+            activity.tint = ReaderTheme.textSecondary
+            stateMicro.attributedStringValue = ReaderTheme.micro("PAUSED", color: ReaderTheme.textSecondary)
+            bigLabel.stringValue = "Paused"
+            bigLabel.textColor = ReaderTheme.textSecondary
+            detail.attributedStringValue = ReaderTheme.micro(modelMicro, size: 9)
             retryButton.isHidden = true
         case .starting(let message):
-            dot.color = ReaderTheme.textSecondary
-            statusLabel.stringValue = message
+            activity.isActive = true
+            activity.tint = ReaderTheme.amber
+            stateMicro.attributedStringValue = ReaderTheme.micro("STARTING", color: ReaderTheme.amber)
+            bigLabel.stringValue = "Starting"
+            bigLabel.textColor = ReaderTheme.textPrimary
+            detail.attributedStringValue = ReaderTheme.micro(message, size: 9)
             retryButton.isHidden = true
         case .listening:
-            dot.color = ReaderTheme.readingStroke
-            statusLabel.stringValue = "Listening — read aloud"
+            activity.isActive = true
+            activity.tint = ReaderTheme.amber
+            stateMicro.attributedStringValue = ReaderTheme.micro("FOLLOWING", color: ReaderTheme.amber)
+            bigLabel.stringValue = "Listening"
+            bigLabel.textColor = ReaderTheme.textPrimary
+            detail.attributedStringValue = ReaderTheme.micro(modelMicro, size: 9)
             retryButton.isHidden = true
         case .failed(let message):
-            dot.color = ReaderTheme.danger
-            statusLabel.stringValue = message
+            activity.isActive = false
+            activity.tint = ReaderTheme.danger
+            stateMicro.attributedStringValue = ReaderTheme.micro("ATTENTION", color: ReaderTheme.danger)
+            bigLabel.stringValue = "Engine error"
+            bigLabel.textColor = ReaderTheme.danger
+            detail.attributedStringValue = ReaderTheme.micro(message, size: 9)
             retryButton.isHidden = false
         }
-        statusLabel.toolTip = statusLabel.stringValue
+        detail.toolTip = detail.stringValue
     }
 
     private func makePanel() {
         let panel = StatusPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 58),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 104),
             styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -120,67 +147,42 @@ final class StatusCard {
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
 
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = ReaderTheme.surfaceRaised.cgColor
-        view.layer?.cornerRadius = 14
-        view.layer?.borderColor = ReaderTheme.readingStroke.withAlphaComponent(0.16).cgColor
-        view.layer?.borderWidth = 1
-        view.layer?.shadowColor = NSColor.black.cgColor
-        view.layer?.shadowOpacity = 0.35
-        view.layer?.shadowRadius = 16
-        view.layer?.shadowOffset = CGSize(width: 0, height: -5)
+        let view = Widget.card(radius: 26)
+        view.layer?.shadowOpacity = 0.45
+        view.layer?.shadowRadius = 26
+        view.layer?.shadowOffset = CGSize(width: 0, height: -10)
 
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.font = ReaderTheme.interfaceFont(size: 12, weight: .medium)
-        statusLabel.textColor = ReaderTheme.textPrimary
-        statusLabel.lineBreakMode = .byTruncatingTail
-        modelLabel.translatesAutoresizingMaskIntoConstraints = false
-        modelLabel.font = ReaderTheme.interfaceFont(size: 11)
-        modelLabel.textColor = ReaderTheme.textSecondary
-
-        for button in [stopButton, retryButton] {
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.isBordered = false
-            button.wantsLayer = true
-            button.layer?.backgroundColor = ReaderTheme.readingStroke.cgColor
-            button.layer?.cornerRadius = 8
-            button.font = ReaderTheme.interfaceFont(size: 12, weight: .semibold)
-            button.contentTintColor = ReaderTheme.canvas
-            button.setButtonType(.momentaryPushIn)
+        for subview in [activity, stateMicro, bigLabel, detail, stopButton, retryButton] {
+            view.addSubview(subview)
         }
         retryButton.isHidden = true
 
-        view.addSubview(dot)
-        view.addSubview(statusLabel)
-        view.addSubview(modelLabel)
-        view.addSubview(stopButton)
-        view.addSubview(retryButton)
-
         NSLayoutConstraint.activate([
-            dot.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            dot.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
+            activity.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            activity.topAnchor.constraint(equalTo: view.topAnchor, constant: 18),
+            activity.widthAnchor.constraint(equalToConstant: 26),
+            activity.heightAnchor.constraint(equalToConstant: 20),
 
-            statusLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 10),
-            statusLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 13),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: stopButton.leadingAnchor, constant: -10),
+            stateMicro.leadingAnchor.constraint(equalTo: activity.trailingAnchor, constant: 10),
+            stateMicro.centerYAnchor.constraint(equalTo: activity.centerYAnchor),
 
-            modelLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 10),
-            modelLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -13),
-            modelLabel.trailingAnchor.constraint(lessThanOrEqualTo: stopButton.leadingAnchor, constant: -10),
+            bigLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            bigLabel.topAnchor.constraint(equalTo: activity.bottomAnchor, constant: 8),
+            bigLabel.trailingAnchor.constraint(lessThanOrEqualTo: retryButton.leadingAnchor, constant: -12),
 
-            stopButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            stopButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            stopButton.widthAnchor.constraint(equalToConstant: 66),
-            stopButton.heightAnchor.constraint(equalToConstant: 32),
+            detail.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
+            detail.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
+            detail.trailingAnchor.constraint(lessThanOrEqualTo: retryButton.leadingAnchor, constant: -12),
 
             retryButton.trailingAnchor.constraint(equalTo: stopButton.leadingAnchor, constant: -8),
             retryButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            retryButton.widthAnchor.constraint(equalToConstant: 62),
-            retryButton.heightAnchor.constraint(equalToConstant: 32),
+            retryButton.widthAnchor.constraint(equalToConstant: 64),
+            retryButton.heightAnchor.constraint(equalToConstant: 34),
+
+            stopButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            stopButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            stopButton.widthAnchor.constraint(equalToConstant: 74),
+            stopButton.heightAnchor.constraint(equalToConstant: 34),
         ])
 
         panel.contentView = view
@@ -191,38 +193,4 @@ final class StatusCard {
 final class StatusPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
-}
-
-/// A small state dot that can live outside any window's layer tree.
-@MainActor
-private final class StatusDot: NSView {
-    var color: NSColor = ReaderTheme.textSecondary {
-        didSet { needsDisplay = true }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        color.setFill()
-        NSBezierPath(ovalIn: bounds).fill()
-    }
-
-    override var intrinsicContentSize: NSSize { NSSize(width: 8, height: 8) }
-}
-
-/// Borderless-styled buttons that fire a callback.
-@MainActor
-private final class CallbackButton: NSButton {
-    var onPress: (() -> Void)?
-
-    init(title: String) {
-        super.init(frame: .zero)
-        self.title = title
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("CallbackButton is built in code")
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onPress?()
-    }
 }

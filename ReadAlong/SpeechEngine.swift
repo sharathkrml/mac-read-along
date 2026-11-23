@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Darwin
 
 enum SpeechEngineState: Equatable {
     case idle
@@ -48,7 +49,7 @@ final class SpeechEngine {
         }
     }
 
-    private let port = 8737
+    private var port = 8737
     /// The model name comes from a single setting; changing it restarts the
     /// engine (issue #4).
     private var model: String { AppSettings.standard.model }
@@ -88,6 +89,7 @@ final class SpeechEngine {
             socket?.close()
             socket = nil
             state = .failed(error.localizedDescription)
+            Log.note("engine start failed: \(error.localizedDescription)")
             throw error
         }
     }
@@ -217,8 +219,27 @@ final class SpeechEngine {
         }
     }
 
-    private static func uvURL() -> URL? {
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
+    private static func freePort(startingAt start: Int) -> Int {
+        for candidate in start...(start + 30) {
+            let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+            guard descriptor >= 0 else { continue }
+            defer { close(descriptor) }
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = in_port_t(candidate).bigEndian
+            address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+            let bound = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            if bound == 0 { return candidate }
+        }
+        return start
+    }
+
+    private static func uvURL() -> URL? {        if let path = ProcessInfo.processInfo.environment["PATH"] {
             for component in path.split(separator: ":") {
                 let candidate = URL(fileURLWithPath: String(component)).appendingPathComponent("uv")
                 if FileManager.default.isExecutableFile(atPath: candidate.path) {
@@ -255,6 +276,11 @@ final class SpeechEngine {
             server.waitUntilExit()
         }
         server = nil
+
+        // A stale sidecar from a previous app run can still hold the port
+        // without answering health checks; take the next free port instead.
+        port = Self.freePort(startingAt: port)
+        Log.note("starting speech engine on port \(port)")
 
         let process = Process()
         process.executableURL = binary

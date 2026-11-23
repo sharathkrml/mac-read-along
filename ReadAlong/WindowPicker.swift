@@ -135,7 +135,7 @@ final class PickerView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.withAlphaComponent(0.38).setFill()
+        NSColor.black.withAlphaComponent(0.52).setFill()
         bounds.fill()
 
         guard let coordinator else { return }
@@ -146,16 +146,16 @@ final class PickerView: NSView {
                 dx: -screenFrame.origin.x,
                 dy: -screenFrame.origin.y
             )
-            let path = NSBezierPath(roundedRect: local, xRadius: 10, yRadius: 10)
+            let path = NSBezierPath(roundedRect: local, xRadius: 14, yRadius: 14)
             if info == hovered {
-                NSColor.systemOrange.withAlphaComponent(0.12).setFill()
+                ReaderTheme.amber.withAlphaComponent(0.10).setFill()
                 path.fill()
-                NSColor.systemOrange.setStroke()
-                path.lineWidth = 3
+                ReaderTheme.amber.setStroke()
+                path.lineWidth = 2.5
                 path.stroke()
                 drawLabel(for: info, at: local)
             } else {
-                NSColor.white.withAlphaComponent(0.35).setStroke()
+                NSColor.white.withAlphaComponent(0.22).setStroke()
                 path.lineWidth = 1
                 path.stroke()
             }
@@ -169,44 +169,67 @@ final class PickerView: NSView {
     }
 
     private func drawLabel(for info: WindowInfo, at rect: CGRect) {
-        let text = info.ownerName as NSString
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: NSColor.white,
+        let name = info.ownerName as NSString
+        let nameAttributes: [NSAttributedString.Key: Any] = [
+            .font: ReaderTheme.interfaceFont(size: 13, weight: .semibold),
+            .foregroundColor: ReaderTheme.textPrimary,
         ]
-        let textSize = text.size(withAttributes: attributes)
-        let labelRect = CGRect(
-            x: rect.minX + 10,
-            y: rect.maxY - textSize.height - 22,
-            width: textSize.width + 20,
-            height: textSize.height + 10
+        let nameSize = name.size(withAttributes: nameAttributes)
+        let micro = ReaderTheme.micro("WINDOW", color: ReaderTheme.amber, size: 9)
+        let microSize = micro.size()
+
+        let cardWidth = max(nameSize.width, microSize.width) + 26
+        let cardHeight: CGFloat = 46
+        let cardRect = CGRect(
+            x: rect.minX + 12,
+            y: rect.maxY - cardHeight - 12,
+            width: cardWidth,
+            height: cardHeight
         )
-        NSColor.black.withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect: labelRect, xRadius: 7, yRadius: 7).fill()
-        text.draw(
-            at: CGPoint(x: labelRect.minX + 10, y: labelRect.minY + 5),
-            withAttributes: attributes
+        ReaderTheme.card.withAlphaComponent(0.96).setFill()
+        let card = NSBezierPath(roundedRect: cardRect, xRadius: 12, yRadius: 12)
+        card.fill()
+        ReaderTheme.hairline.setStroke()
+        card.lineWidth = 1
+        card.stroke()
+
+        micro.draw(at: CGPoint(x: cardRect.minX + 13, y: cardRect.maxY - 22))
+        name.draw(
+            at: CGPoint(x: cardRect.minX + 13, y: cardRect.minY + 8),
+            withAttributes: nameAttributes
         )
     }
 
     private func drawHint() {
-        let text = "Click a window to read  ·  Esc to cancel" as NSString
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.9),
+        let micro = ReaderTheme.micro("CHOOSE A WINDOW", color: ReaderTheme.amber, size: 9)
+        let action = "Click to start  ·  Esc to cancel" as NSString
+        let actionAttributes: [NSAttributedString.Key: Any] = [
+            .font: ReaderTheme.interfaceFont(size: 12, weight: .medium),
+            .foregroundColor: ReaderTheme.textPrimary,
         ]
-        let textSize = text.size(withAttributes: attributes)
+        let actionSize = action.size(withAttributes: actionAttributes)
+        let microSize = micro.size()
+
+        let width = max(actionSize.width, microSize.width) + 34
         let rect = CGRect(
-            x: bounds.midX - textSize.width / 2 - 14,
-            y: 36,
-            width: textSize.width + 28,
-            height: textSize.height + 12
+            x: bounds.midX - width / 2,
+            y: 40,
+            width: width,
+            height: 56
         )
-        NSColor.black.withAlphaComponent(0.7).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
-        text.draw(
-            at: CGPoint(x: rect.minX + 14, y: rect.minY + 6),
-            withAttributes: attributes
+        ReaderTheme.card.withAlphaComponent(0.94).setFill()
+        let card = NSBezierPath(roundedRect: rect, xRadius: 16, yRadius: 16)
+        card.fill()
+        ReaderTheme.hairline.setStroke()
+        card.lineWidth = 1
+        card.stroke()
+
+        ReaderTheme.amber.withAlphaComponent(0.95).setFill()
+        NSBezierPath(ovalIn: CGRect(x: rect.minX + 15, y: rect.midY - 2.5, width: 5, height: 5)).fill()
+        micro.draw(at: CGPoint(x: rect.minX + 28, y: rect.maxY - 24))
+        action.draw(
+            at: CGPoint(x: rect.minX + 28, y: rect.minY + 10),
+            withAttributes: actionAttributes
         )
     }
 }

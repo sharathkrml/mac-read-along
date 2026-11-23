@@ -111,6 +111,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.note("onboarding shown: completed=\(AppSettings.standard.onboardingCompleted) mic=\(micGranted) screen=\(screenGranted)")
             onboarding.show()
         }
+
+        installShortcutMonitor()
+    }
+
+    /// Standard app shortcuts while any Read Along window is frontmost.
+    private func installShortcutMonitor() {
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.modifierFlags.contains(.command) else { return event }
+            switch event.charactersIgnoringModifiers {
+            case ",":
+                MainActor.assumeIsolated { self?.showSettings() }
+                return nil
+            case "o":
+                MainActor.assumeIsolated { self?.openReading() }
+                return nil
+            case "w":
+                MainActor.assumeIsolated { NSApp.keyWindow?.performClose(nil) }
+                return nil
+            default:
+                return event
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

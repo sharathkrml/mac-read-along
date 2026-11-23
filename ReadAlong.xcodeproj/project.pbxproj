@@ -20,6 +20,7 @@
 		683D961428B3419E9D8BB0F3 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = D31B399CA8FB266F919FE7C6 /* Onboarding.swift */; };
 		6D872A0386EE2B973AAEF97E /* AutoScrollPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EA70A8DA8485701E5A7F971 /* AutoScrollPlannerTests.swift */; };
 		6FB53C7EE7332694B189ED89 /* SurfaceBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC705A57EA6ED1CCF81E4D86 /* SurfaceBuilder.swift */; };
+		73F5C8AE8879C0A392116251 /* Widgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91EFE0F08318E02946FAF6A1 /* Widgets.swift */; };
 		7CA72C6B165BF8200BFF4C9E /* ReadingTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FB3124695A5FE6A9A181D3 /* ReadingTrackerTests.swift */; };
 		82289D59622B3682782658E0 /* SurfaceBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1414F38054FF0A08063EC725 /* SurfaceBuilderTests.swift */; };
 		885A37970E7CB8E254BEDA69 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5580DAF2D4E6991187A7C2FA /* main.swift */; };
@@ -73,6 +74,7 @@
 		8CA43C93C63DB7A7B704443C /* ScreenRecordingPermission.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenRecordingPermission.swift; sourceTree = "<group>"; };
 		8CC5AFA936AAC64C3B91BDE2 /* ReadAlong.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReadAlong.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8EA70A8DA8485701E5A7F971 /* AutoScrollPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoScrollPlannerTests.swift; sourceTree = "<group>"; };
+		91EFE0F08318E02946FAF6A1 /* Widgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Widgets.swift; sourceTree = "<group>"; };
 		9C1A01361ED39D242633B231 /* WindowInfoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowInfoTests.swift; sourceTree = "<group>"; };
 		A08DBBBD1C8BB8ED9DC1FF03 /* WindowCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCapture.swift; sourceTree = "<group>"; };
 		A29236AD62F26DC5DF9E222B /* PDFSurfaceBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFSurfaceBuilderTests.swift; sourceTree = "<group>"; };
@@ -151,6 +153,7 @@
 				25FD2B5C806FBBB420ABAD78 /* SpeechEngine.swift */,
 				3F9CAA5648FD9EF31D46D699 /* StatusCard.swift */,
 				CC705A57EA6ED1CCF81E4D86 /* SurfaceBuilder.swift */,
+				91EFE0F08318E02946FAF6A1 /* Widgets.swift */,
 				A08DBBBD1C8BB8ED9DC1FF03 /* WindowCapture.swift */,
 				F610525F8EB2CF118229E371 /* WindowInfo.swift */,
 				A8DAC64484E3BC67138AB9C5 /* WindowPicker.swift */,
@@ -261,6 +264,7 @@
 				EAA2EA100568EFA528A61D9A /* SpeechEngine.swift in Sources */,
 				9F507292BE8E1146D29FC6DC /* StatusCard.swift in Sources */,
 				6FB53C7EE7332694B189ED89 /* SurfaceBuilder.swift in Sources */,
+				73F5C8AE8879C0A392116251 /* Widgets.swift in Sources */,
 				FA6F6BC3B78DB281CEC19E21 /* WindowCapture.swift in Sources */,
 				10251434119749764891D68C /* WindowInfo.swift in Sources */,
 				CA9C157873B73523FF5959AA /* WindowPicker.swift in Sources */,

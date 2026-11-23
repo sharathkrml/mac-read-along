@@ -14,8 +14,19 @@ final class ReaderController: NSObject, NSWindowDelegate {
     private var pdfSentences: [PDFSentence] = []
     private var isPDF = false
     private var listenButton: NSButton?
-    private var statusLabel: NSTextField?
-    private var statusDot: NSView?
+    private var stateLabel: NSTextField?
+    private var detailLabel: NSTextField?
+    private var activityBars: ActivityBars?
+    private var documentTitleLabel: NSTextField?
+    private var documentMetaLabel: NSTextField?
+    private var progressValueLabel: NSTextField?
+    private var progressMetaLabel: NSTextField?
+    private var progressBar: ProgressBar?
+    private var readingCard: NSView?
+    private var sessionTimeLabel: NSTextField?
+    private var sessionTimer: Timer?
+    private var sessionStartedAt: Date?
+    private var sessionElapsed: TimeInterval = 0
     private var lastHighlighted = NSRange(location: 0, length: 0)
     private var highlighted = false
     private var isStarting = false
@@ -83,6 +94,11 @@ final class ReaderController: NSObject, NSWindowDelegate {
         install(text: text)
         pdfSentences = []
         tracker.load(sentences: SentenceIndex.sentences(in: text))
+        updateDocumentCard(
+            name: url.deletingPathExtension().lastPathComponent,
+            kind: Self.documentKind(for: url),
+            sentenceCount: tracker.sentences.count
+        )
         clearHighlights()
         setStatus("\(tracker.sentences.count) sentences · press Listen", color: ReaderTheme.textSecondary)
         updateListenButton()
@@ -108,8 +124,14 @@ final class ReaderController: NSObject, NSWindowDelegate {
         )
         pdfSentences = sentences
         tracker.load(sentences: sentences.map(\.sentence))
+        updateDocumentCard(
+            name: url.deletingPathExtension().lastPathComponent,
+            kind: "PDF",
+            sentenceCount: sentences.count
+        )
 
         if sentences.isEmpty {
+            updateDocumentMeta("PDF · NO SELECTABLE TEXT")
             // Text-based PDFs only: image-only scans have nothing to track.
             clearHighlights()
             setStatus(
@@ -137,13 +159,13 @@ final class ReaderController: NSObject, NSWindowDelegate {
             view.displayDirection = .vertical
             view.displaysPageBreaks = true
             view.autoScales = true
-            view.backgroundColor = ReaderTheme.canvas
+            view.backgroundColor = ReaderTheme.card
 
             highlight = PDFHighlightView(frame: .zero)
             highlight.autoresizingMask = [.width, .height]
             view.addSubview(highlight)
 
-            guard let container = window?.contentView else { return }
+            guard let container = readingCard else { return }
             container.addSubview(view)
             NSLayoutConstraint.activate([
                 view.topAnchor.constraint(equalTo: container.topAnchor),
@@ -193,21 +215,23 @@ final class ReaderController: NSObject, NSWindowDelegate {
         if window == nil {
             window = makeWindow()
         }
+        window?.ensureOnVisibleScreen()
         window?.makeKeyAndOrderFront(nil)
     }
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 920, height: 720),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 1040, height: 780),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Read Along"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = ReaderTheme.canvas
         window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 560, height: 420)
+        window.minSize = NSSize(width: 820, height: 620)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -219,12 +243,53 @@ final class ReaderController: NSObject, NSWindowDelegate {
         container.registerForDraggedTypes([.fileURL])
         window.contentView = container
 
+        let backdrop = BackdropView()
+        container.addSubview(backdrop)
+
+        // Document widget
+        let documentCard = Widget.card()
+        let documentIcon = Widget.iconTile(symbol: "text.alignleft")
+        let documentMicro = Widget.microLabel("READING", color: ReaderTheme.amber)
+        let documentTitle = Widget.titleLabel("No document", size: 20)
+        let documentMeta = Widget.microLabel("OPEN A TEXT, MARKDOWN OR PDF FILE")
+        documentTitleLabel = documentTitle
+        documentMetaLabel = documentMeta
+        documentCard.addSubview(documentIcon)
+        documentCard.addSubview(documentMicro)
+        documentCard.addSubview(documentTitle)
+        documentCard.addSubview(documentMeta)
+
+        // Progress widget
+        let progressCard = Widget.card()
+        let progressMicro = Widget.microLabel("PROGRESS")
+        let progressValue = Widget.displayLabel("—", size: 30, weight: .light)
+        progressValueLabel = progressValue
+        let bar = ProgressBar()
+        progressBar = bar
+        let progressMeta = Widget.microLabel("NO DOCUMENT")
+        progressMetaLabel = progressMeta
+        progressCard.addSubview(progressMicro)
+        progressCard.addSubview(progressValue)
+        progressCard.addSubview(bar)
+        progressCard.addSubview(progressMeta)
+
+        // Reading surface
+        let reading = NSView()
+        reading.translatesAutoresizingMaskIntoConstraints = false
+        reading.wantsLayer = true
+        reading.layer?.backgroundColor = ReaderTheme.card.cgColor
+        reading.layer?.cornerRadius = 30
+        reading.layer?.borderWidth = 1
+        reading.layer?.borderColor = ReaderTheme.hairline.cgColor
+        reading.layer?.masksToBounds = true
+        readingCard = reading
+
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
         scroll.automaticallyAdjustsContentInsets = false
-        scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 96, right: 0)
+        scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 16, right: 0)
         textScroll = scroll
 
         let textView = NSTextView()
@@ -233,8 +298,8 @@ final class ReaderController: NSObject, NSWindowDelegate {
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.textColor = ReaderTheme.textPrimary
-        textView.font = ReaderTheme.readingFont()
-        textView.textContainerInset = NSSize(width: 52, height: 44)
+        textView.font = ReaderTheme.readingFont(size: 20)
+        textView.textContainerInset = NSSize(width: 56, height: 44)
         textView.textContainer?.widthTracksTextView = true
         textView.textContainer?.lineFragmentPadding = 0
         textView.isVerticallyResizable = true
@@ -244,79 +309,219 @@ final class ReaderController: NSObject, NSWindowDelegate {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = textView
         self.textView = textView
+        reading.addSubview(scroll)
 
-        let card = NSView()
-        card.translatesAutoresizingMaskIntoConstraints = false
-        card.wantsLayer = true
-        card.layer?.backgroundColor = ReaderTheme.surfaceRaised.cgColor
-        card.layer?.cornerRadius = 16
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = ReaderTheme.readingStroke.withAlphaComponent(0.16).cgColor
-        card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = 0.35
-        card.layer?.shadowRadius = 18
-        card.layer?.shadowOffset = CGSize(width: 0, height: -6)
-        card.layer?.masksToBounds = false
+        // Session widget
+        let control = Widget.card(radius: 28)
+        let bars = ActivityBars()
+        activityBars = bars
+        let state = Widget.microLabel("PAUSED")
+        stateLabel = state
+        let detail = Widget.titleLabel("PHONON-2 · ENGLISH", size: 11, weight: .regular, color: ReaderTheme.textSecondary)
+        detailLabel = detail
+        let time = Widget.displayLabel("00:00", size: 28, weight: .light)
+        sessionTimeLabel = time
+        let timeMicro = Widget.microLabel("SESSION")
+        let timeStack = NSStackView(views: [time, timeMicro])
+        timeStack.translatesAutoresizingMaskIntoConstraints = false
+        timeStack.orientation = .vertical
+        timeStack.alignment = .centerX
+        timeStack.spacing = 1
 
-        let dot = NSView()
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        dot.layer?.backgroundColor = ReaderTheme.textSecondary.cgColor
-        statusDot = dot
-
-        let status = NSTextField(labelWithString: "Open a text or Markdown file")
-        status.translatesAutoresizingMaskIntoConstraints = false
-        status.font = ReaderTheme.interfaceFont(size: 12)
-        status.textColor = ReaderTheme.textSecondary
-        status.lineBreakMode = .byTruncatingTail
-        statusLabel = status
-
-        let button = NSButton(title: "Listen", target: self, action: #selector(toggleListening))
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.isBordered = false
-        button.wantsLayer = true
-        button.layer?.backgroundColor = ReaderTheme.readingStroke.cgColor
-        button.layer?.cornerRadius = 9
-        button.font = ReaderTheme.interfaceFont(size: 13, weight: .semibold)
-        button.contentTintColor = ReaderTheme.canvas
-        button.setButtonType(.momentaryPushIn)
+        let button = PillButton("Listen", kind: .primary)
+        button.onPress = { [weak self] in self?.toggleListening() }
         listenButton = button
 
-        card.addSubview(dot)
-        card.addSubview(status)
-        card.addSubview(button)
-        container.addSubview(scroll)
-        container.addSubview(card)
+        control.addSubview(bars)
+        control.addSubview(state)
+        control.addSubview(detail)
+        control.addSubview(timeStack)
+        control.addSubview(button)
+
+        let readingColumnWidth = scroll.widthAnchor.constraint(equalToConstant: 760)
+        readingColumnWidth.priority = .defaultHigh
+
+        container.addSubview(documentCard)
+        container.addSubview(progressCard)
+        container.addSubview(reading)
+        container.addSubview(control)
 
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: container.topAnchor),
-            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            backdrop.topAnchor.constraint(equalTo: container.topAnchor),
+            backdrop.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
-            card.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            card.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24),
-            card.widthAnchor.constraint(equalToConstant: 460),
-            card.heightAnchor.constraint(equalToConstant: 64),
+            documentCard.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
+            documentCard.topAnchor.constraint(equalTo: container.topAnchor, constant: 52),
+            documentCard.heightAnchor.constraint(equalToConstant: 100),
+            documentCard.trailingAnchor.constraint(equalTo: progressCard.leadingAnchor, constant: -16),
 
-            dot.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 18),
-            dot.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
+            progressCard.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
+            progressCard.topAnchor.constraint(equalTo: documentCard.topAnchor),
+            progressCard.widthAnchor.constraint(equalToConstant: 260),
+            progressCard.heightAnchor.constraint(equalToConstant: 100),
 
-            status.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 9),
-            status.trailingAnchor.constraint(equalTo: button.leadingAnchor, constant: -14),
-            status.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+            documentIcon.leadingAnchor.constraint(equalTo: documentCard.leadingAnchor, constant: 20),
+            documentIcon.centerYAnchor.constraint(equalTo: documentCard.centerYAnchor),
 
-            button.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
-            button.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            button.widthAnchor.constraint(equalToConstant: 96),
-            button.heightAnchor.constraint(equalToConstant: 36),
+            documentMicro.leadingAnchor.constraint(equalTo: documentIcon.trailingAnchor, constant: 16),
+            documentMicro.topAnchor.constraint(equalTo: documentCard.topAnchor, constant: 20),
+            documentMicro.trailingAnchor.constraint(lessThanOrEqualTo: documentCard.trailingAnchor, constant: -20),
+
+            documentTitle.leadingAnchor.constraint(equalTo: documentMicro.leadingAnchor),
+            documentTitle.topAnchor.constraint(equalTo: documentMicro.bottomAnchor, constant: 6),
+            documentTitle.trailingAnchor.constraint(equalTo: documentCard.trailingAnchor, constant: -20),
+
+            documentMeta.leadingAnchor.constraint(equalTo: documentMicro.leadingAnchor),
+            documentMeta.topAnchor.constraint(equalTo: documentTitle.bottomAnchor, constant: 5),
+            documentMeta.trailingAnchor.constraint(lessThanOrEqualTo: documentCard.trailingAnchor, constant: -20),
+
+            progressMicro.leadingAnchor.constraint(equalTo: progressCard.leadingAnchor, constant: 20),
+            progressMicro.topAnchor.constraint(equalTo: progressCard.topAnchor, constant: 16),
+
+            progressValue.leadingAnchor.constraint(equalTo: progressMicro.leadingAnchor),
+            progressValue.topAnchor.constraint(equalTo: progressMicro.bottomAnchor, constant: 2),
+
+            progressMeta.leadingAnchor.constraint(equalTo: progressMicro.leadingAnchor),
+            progressMeta.bottomAnchor.constraint(equalTo: progressCard.bottomAnchor, constant: -14),
+            progressMeta.trailingAnchor.constraint(lessThanOrEqualTo: progressCard.trailingAnchor, constant: -16),
+
+            bar.leadingAnchor.constraint(equalTo: progressMicro.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: progressCard.trailingAnchor, constant: -20),
+            bar.bottomAnchor.constraint(equalTo: progressMeta.topAnchor, constant: -7),
+            bar.heightAnchor.constraint(equalToConstant: 4),
+
+            reading.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
+            reading.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
+            reading.topAnchor.constraint(equalTo: documentCard.bottomAnchor, constant: 16),
+            reading.bottomAnchor.constraint(equalTo: control.topAnchor, constant: -16),
+
+            scroll.topAnchor.constraint(equalTo: reading.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: reading.bottomAnchor),
+            scroll.centerXAnchor.constraint(equalTo: reading.centerXAnchor),
+            scroll.widthAnchor.constraint(lessThanOrEqualTo: reading.widthAnchor, constant: -64),
+            readingColumnWidth,
+
+            control.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            control.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24),
+            control.widthAnchor.constraint(equalToConstant: 560),
+            control.heightAnchor.constraint(equalToConstant: 96),
+
+            bars.leadingAnchor.constraint(equalTo: control.leadingAnchor, constant: 22),
+            bars.centerYAnchor.constraint(equalTo: control.centerYAnchor),
+            bars.widthAnchor.constraint(equalToConstant: 26),
+            bars.heightAnchor.constraint(equalToConstant: 20),
+
+            state.leadingAnchor.constraint(equalTo: bars.trailingAnchor, constant: 12),
+            state.topAnchor.constraint(equalTo: control.topAnchor, constant: 24),
+            state.trailingAnchor.constraint(lessThanOrEqualTo: timeStack.leadingAnchor, constant: -14),
+
+            detail.leadingAnchor.constraint(equalTo: state.leadingAnchor),
+            detail.topAnchor.constraint(equalTo: state.bottomAnchor, constant: 4),
+            detail.trailingAnchor.constraint(lessThanOrEqualTo: timeStack.leadingAnchor, constant: -14),
+
+            timeStack.centerXAnchor.constraint(equalTo: control.centerXAnchor),
+            timeStack.centerYAnchor.constraint(equalTo: control.centerYAnchor),
+            timeStack.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -16),
+
+            button.trailingAnchor.constraint(equalTo: control.trailingAnchor, constant: -16),
+            button.centerYAnchor.constraint(equalTo: control.centerYAnchor),
+            button.widthAnchor.constraint(equalToConstant: 116),
+            button.heightAnchor.constraint(equalToConstant: 44),
         ])
 
         updateListenButton()
+        updateProgress()
         return window
+    }
+
+    private func updateDocumentCard(name: String, kind: String, sentenceCount: Int) {
+        documentTitleLabel?.stringValue = name
+        documentMetaLabel?.attributedStringValue = ReaderTheme.micro(
+            "\(kind) · \(sentenceCount) \(sentenceCount == 1 ? "SENTENCE" : "SENTENCES")"
+        )
+    }
+
+    private func updateProgress() {
+        let total = tracker.sentences.count
+        let current = tracker.cursor.map { $0 + 1 } ?? 0
+        progressBar?.progress = total > 0 ? CGFloat(current) / CGFloat(total) : 0
+
+        guard total > 0 else {
+            progressValueLabel?.stringValue = "—"
+            progressMetaLabel?.attributedStringValue = ReaderTheme.micro("NO DOCUMENT")
+            return
+        }
+
+        let value = NSMutableAttributedString(
+            string: current == 0 ? "—" : "\(current)",
+            attributes: [
+                .font: ReaderTheme.display(size: 30, weight: .light),
+                .foregroundColor: ReaderTheme.textPrimary,
+            ]
+        )
+        value.append(NSAttributedString(
+            string: " / \(total)",
+            attributes: [
+                .font: ReaderTheme.display(size: 18, weight: .light),
+                .foregroundColor: ReaderTheme.textSecondary,
+            ]
+        ))
+        progressValueLabel?.attributedStringValue = value
+        progressMetaLabel?.attributedStringValue = ReaderTheme.micro(
+            current == 0 ? "PRESS LISTEN TO BEGIN" : "SENTENCE \(current) OF \(total)"
+        )
+    }
+
+    private func resetSessionTimer() {
+        sessionTimer?.invalidate()
+        sessionTimer = nil
+        sessionStartedAt = nil
+        sessionElapsed = 0
+        updateSessionClock()
+    }
+
+    private func startSessionTimer() {
+        guard sessionStartedAt == nil else { return }
+        sessionStartedAt = Date()
+        sessionTimer?.invalidate()
+        sessionTimer = Timer.scheduledTimer(
+            timeInterval: 0.5,
+            target: self,
+            selector: #selector(sessionTick),
+            userInfo: nil,
+            repeats: true
+        )
+    }
+
+    private func stopSessionTimer() {
+        sessionTimer?.invalidate()
+        sessionTimer = nil
+        if let started = sessionStartedAt {
+            sessionElapsed = Date().timeIntervalSince(started)
+            sessionStartedAt = nil
+        }
+        updateSessionClock()
+    }
+
+    @objc private func sessionTick() {
+        updateSessionClock()
+    }
+
+    private func updateSessionClock() {
+        let elapsed = sessionStartedAt.map { Date().timeIntervalSince($0) } ?? sessionElapsed
+        let total = max(0, Int(elapsed))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        let text: String
+        if hours > 0 {
+            text = String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            text = String(format: "%02d:%02d", minutes, seconds)
+        }
+        sessionTimeLabel?.stringValue = text
     }
 
     private func install(text: String) {
@@ -325,12 +530,12 @@ final class ReaderController: NSObject, NSWindowDelegate {
         textScroll?.isHidden = false
 
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 8
-        paragraph.paragraphSpacing = 14
+        paragraph.lineSpacing = 9
+        paragraph.paragraphSpacing = 16
         let attributed = NSAttributedString(
             string: text,
             attributes: [
-                .font: ReaderTheme.readingFont(),
+                .font: ReaderTheme.readingFont(size: 20),
                 .foregroundColor: ReaderTheme.textPrimary,
                 .paragraphStyle: paragraph,
             ]
@@ -345,6 +550,19 @@ final class ReaderController: NSObject, NSWindowDelegate {
         return try String(contentsOf: url, encoding: .isoLatin1)
     }
 
+    private static func documentKind(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "md", "markdown": return "MARKDOWN"
+        case "pdf": return "PDF"
+        case "txt", "text": return "TEXT"
+        default: return "DOCUMENT"
+        }
+    }
+
+    private func updateDocumentMeta(_ text: String) {
+        documentMetaLabel?.attributedStringValue = ReaderTheme.micro(text)
+    }
+
     // MARK: - Listening
 
     @objc private func toggleListening() {
@@ -352,6 +570,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
         case .listening, .starting:
             engine.stop()
             isStarting = false
+            stopSessionTimer()
             setStatus("Paused", color: ReaderTheme.textSecondary)
             updateListenButton()
         default:
@@ -367,6 +586,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
         guard !isStarting else { return }
 
         isStarting = true
+        resetSessionTimer()
         setStatus("Starting speech engine…", color: ReaderTheme.textSecondary)
         updateListenButton()
 
@@ -389,12 +609,15 @@ final class ReaderController: NSObject, NSWindowDelegate {
         }
         switch state {
         case .idle:
+            stopSessionTimer()
             setStatus("Paused", color: ReaderTheme.textSecondary)
         case .starting(let message):
             setStatus(message, color: ReaderTheme.textSecondary)
         case .listening:
+            startSessionTimer()
             setStatus("Listening — read aloud", color: ReaderTheme.readingStroke)
         case .failed(let message):
+            stopSessionTimer()
             setStatus(message, color: ReaderTheme.danger)
         }
         updateListenButton()
@@ -411,10 +634,36 @@ final class ReaderController: NSObject, NSWindowDelegate {
     }
 
     private func setStatus(_ text: String, color: NSColor) {
-        statusLabel?.stringValue = text
-        statusLabel?.textColor = color
-        statusLabel?.toolTip = text
-        statusDot?.layer?.backgroundColor = color.cgColor
+        let model = AppSettings.standard.model.uppercased()
+        let state: String
+        let detail: String
+
+        if color == ReaderTheme.danger {
+            state = "ENGINE ERROR"
+            detail = text
+        } else if engine.state == .listening {
+            state = "LISTENING"
+            detail = "\(model) · ENGLISH"
+        } else if case .starting = engine.state {
+            state = "STARTING"
+            detail = text
+        } else if text.contains("press Listen") {
+            state = "READY"
+            detail = text
+        } else if text == "Open a file first" {
+            state = "NO DOCUMENT"
+            detail = "Open a text, Markdown or PDF file"
+        } else {
+            state = "PAUSED"
+            detail = text == "Paused" ? "\(model) · ENGLISH" : text
+        }
+
+        stateLabel?.attributedStringValue = ReaderTheme.micro(state, color: color)
+        detailLabel?.stringValue = detail
+        detailLabel?.toolTip = detail
+        activityBars?.tint = color
+        activityBars?.isActive = engine.state == .listening
+        sessionTimeLabel?.alphaValue = engine.state == .listening ? 1 : 0.65
     }
 
     // MARK: - Highlights
@@ -444,6 +693,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
     }
 
     private func renderHighlights() {
+        updateProgress()
         if isPDF {
             renderPDFHighlights()
             return
@@ -598,6 +848,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         engine.stop()
         isStarting = false
+        stopSessionTimer()
         updateListenButton()
     }
 }

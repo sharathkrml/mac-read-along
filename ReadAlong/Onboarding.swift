@@ -12,8 +12,12 @@ final class OnboardingController: NSObject, NSWindowDelegate {
     private var screenRow: PermissionRow?
     private var accessibilityRow: PermissionRow?
     private var engineStatusLabel: NSTextField?
-    private var engineButton: NSButton?
-    private var continueButton: NSButton?
+    private var engineDetailLabel: NSTextField?
+    private var engineActivity: ActivityBars?
+    private var engineButton: PillButton?
+    private var continueButton: PillButton?
+    private var cards: [NSView] = []
+    private var enginePrepared = false
 
     init(engine: SpeechEngine) {
         self.engine = engine
@@ -29,10 +33,12 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         if window == nil {
             window = makeWindow()
         }
+        window?.ensureOnVisibleScreen()
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
         refreshPermissions()
+        animateCards()
     }
 
     // MARK: - Permission rows
@@ -69,14 +75,25 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
     @objc private func startEngineSetup() {
         engineButton?.isEnabled = false
-        engineStatusLabel?.stringValue = "Setting up the speech engine…"
+        engineButton?.title = "Setting up…"
+        engineStatusLabel?.stringValue = "Starting"
+        engineDetailLabel?.stringValue = "Installing the local speech engine."
+        engineActivity?.isActive = true
         Task { @MainActor in
             do {
                 try await self.engine.prepare()
+                self.enginePrepared = true
                 self.engineStatusLabel?.stringValue = "Ready"
+                self.engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+                self.engineButton?.title = "Ready"
+                self.engineButton?.isEnabled = false
+                self.engineActivity?.isActive = false
             } catch {
-                self.engineStatusLabel?.stringValue = error.localizedDescription
+                self.engineStatusLabel?.stringValue = "Error"
+                self.engineDetailLabel?.stringValue = error.localizedDescription
+                self.engineButton?.title = "Retry"
                 self.engineButton?.isEnabled = true
+                self.engineActivity?.isActive = false
             }
         }
     }
@@ -85,14 +102,29 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         guard window?.isVisible == true else { return }
         switch state {
         case .starting(let message):
-            engineStatusLabel?.stringValue = message
+            engineStatusLabel?.stringValue = "Starting"
+            engineDetailLabel?.stringValue = message
+            engineActivity?.isActive = true
         case .listening:
-            engineStatusLabel?.stringValue = "Ready — engine running"
+            engineStatusLabel?.stringValue = "Ready"
+            engineDetailLabel?.stringValue = "Engine running"
+            engineActivity?.isActive = false
+            engineButton?.title = "Ready"
+            engineButton?.isEnabled = false
         case .failed(let message):
-            engineStatusLabel?.stringValue = message
+            engineStatusLabel?.stringValue = "Error"
+            engineDetailLabel?.stringValue = message
+            engineActivity?.isActive = false
+            engineButton?.title = "Retry"
             engineButton?.isEnabled = true
         case .idle:
-            break
+            if enginePrepared {
+                engineStatusLabel?.stringValue = "Ready"
+                engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+            } else {
+                engineStatusLabel?.stringValue = "Off"
+                engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+            }
         }
     }
 
@@ -105,103 +137,298 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 940, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Welcome to Read Along"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = ReaderTheme.canvas
         window.appearance = NSAppearance(named: .darkAqua)
+        window.minSize = NSSize(width: 860, height: 660)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
 
-        let micRow = PermissionRow(title: "Microphone", required: true) { [weak self] in
-            self?.grantMicrophone()
-        }
-        let screenRow = PermissionRow(title: "Screen Recording", required: true) { [weak self] in
-            self?.grantScreenRecording()
-        }
-        let accessibilityRow = PermissionRow(title: "Accessibility", required: false) { [weak self] in
-            self?.grantAccessibility()
-        }
+        let content = NSView()
+        content.wantsLayer = true
+        content.layer?.backgroundColor = ReaderTheme.canvas.cgColor
+        window.contentView = content
+
+        let backdrop = BackdropView()
+        content.addSubview(backdrop)
+
+        // Header
+        let kicker = Widget.microLabel("READ ALONG · SETUP", color: ReaderTheme.amber)
+        let title = Widget.displayLabel("Settle in.", size: 44, weight: .thin)
+        let subtitle = Widget.bodyLabel(
+            "A quiet reading surface that follows your voice. Grant two permissions, set up the local speech engine, and read.",
+            size: 13
+        )
+        let privacy = Widget.capsuleLabel("LOCAL · PRIVATE", tint: ReaderTheme.textSecondary)
+
+        content.addSubview(kicker)
+        content.addSubview(title)
+        content.addSubview(subtitle)
+        content.addSubview(privacy)
+
+        // Permissions widget
+        let permissions = Widget.card()
+        let permissionKicker = Widget.microLabel("01 · PERMISSIONS")
+        let permissionTitle = Widget.titleLabel("Let it hear you.", size: 18)
+
+        let micRow = PermissionRow(
+            title: "Microphone",
+            symbol: "mic",
+            onGrant: { [weak self] in self?.grantMicrophone() }
+        )
+        let screenRow = PermissionRow(
+            title: "Screen Recording",
+            symbol: "rectangle.dashed",
+            onGrant: { [weak self] in self?.grantScreenRecording() }
+        )
+        let accessibilityRow = PermissionRow(
+            title: "Accessibility",
+            symbol: "accessibility",
+            onGrant: { [weak self] in self?.grantAccessibility() }
+        )
         self.micRow = micRow
         self.screenRow = screenRow
         self.accessibilityRow = accessibilityRow
 
-        let engineStatusLabel = NSTextField(labelWithString: "Not set up yet")
-        engineStatusLabel.font = ReaderTheme.interfaceFont(size: 12)
-        engineStatusLabel.textColor = ReaderTheme.textSecondary
-        self.engineStatusLabel = engineStatusLabel
+        permissions.addSubview(permissionKicker)
+        permissions.addSubview(permissionTitle)
+        permissions.addSubview(micRow)
+        permissions.addSubview(screenRow)
+        permissions.addSubview(accessibilityRow)
 
-        let engineButton = NSButton(title: "Set Up Speech Engine", target: self, action: #selector(startEngineSetup))
-        engineButton.bezelColor = ReaderTheme.readingStroke
+        // Engine widget
+        let engineCard = Widget.card()
+        let engineKicker = Widget.microLabel("02 · SPEECH ENGINE")
+        let engineTitle = Widget.displayLabel("Off", size: 32, weight: .light)
+        let engineDetail = Widget.bodyLabel(
+            "\(AppSettings.standard.model.uppercased()) · ENGLISH",
+            size: 11
+        )
+        let activity = ActivityBars()
+        let engineButton = PillButton("Set Up Engine", kind: .primary)
+        engineButton.onPress = { [weak self] in self?.startEngineSetup() }
+        engineButton.font = ReaderTheme.interfaceFont(size: 12, weight: .semibold)
+
+        engineStatusLabel = engineTitle
+        engineDetailLabel = engineDetail
+        engineActivity = activity
         self.engineButton = engineButton
 
+        engineCard.addSubview(engineKicker)
+        engineCard.addSubview(engineTitle)
+        engineCard.addSubview(engineDetail)
+        engineCard.addSubview(activity)
+        engineCard.addSubview(engineButton)
+
+        // How-to widget
+        let howTo = Widget.card()
+        let howToKicker = Widget.microLabel("03 · HOW TO READ")
         let hotkey = HotkeyManager.displayString(
             keyCode: AppSettings.standard.hotkeyCode,
             modifiers: AppSettings.standard.hotkeyModifiers
         )
+        let keys = KeycapsView(keys: hotkey)
+        let howToBody = Widget.bodyLabel(
+            "Press the shortcut, click the window you are reading, and read aloud.",
+            size: 12
+        )
+        let currentSample = highlightSample(
+            "The sentence under your voice.",
+            fill: ReaderTheme.readingFill,
+            ink: ReaderTheme.readingInk
+        )
+        let nextSample = highlightSample(
+            "The next one waits here.",
+            fill: ReaderTheme.nextFill,
+            ink: ReaderTheme.textSecondary
+        )
 
-        let howTo = NSTextField(wrappingLabelWithString: """
-        Press \(hotkey) to start a session, click the window you are reading, \
-        and read aloud. The sentence under your voice glows amber and the next \
-        one waits faintly. Finish a sentence and the glow advances; a three-word \
-        phrase jumps ahead or back; stray words never move it. Open local text, \
-        Markdown or PDF files from the menu bar any time.
-        """)
-        howTo.font = ReaderTheme.interfaceFont(size: 12)
-        howTo.textColor = ReaderTheme.textSecondary
+        howTo.addSubview(howToKicker)
+        howTo.addSubview(keys)
+        howTo.addSubview(howToBody)
+        howTo.addSubview(currentSample)
+        howTo.addSubview(nextSample)
 
-        let continueButton = NSButton(title: "Start Reading", target: self, action: #selector(finish))
-        continueButton.bezelColor = ReaderTheme.readingStroke
-        continueButton.keyEquivalent = "\r"
-        self.continueButton = continueButton
+        // Ready widget
+        let ready = Widget.card()
+        let readyKicker = Widget.microLabel("READY WHEN YOU ARE")
+        let readyTitle = Widget.displayLabel("Go.", size: 40, weight: .thin)
+        let readyHint = Widget.bodyLabel("Permissions and the model can be changed later in Settings.", size: 11)
+        let startButton = PillButton("Start reading", kind: .primary)
+        startButton.onPress = { [weak self] in self?.finish() }
+        continueButton = startButton
 
-        let stack = NSStackView(views: [
-            sectionTitle("1 · Permissions"),
-            micRow,
-            screenRow,
-            accessibilityRow,
-            sectionTitle("2 · Speech engine"),
-            engineStatusLabel,
-            engineButton,
-            sectionTitle("3 · How to read"),
-            howTo,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 24, bottom: 16, right: 24)
+        ready.addSubview(readyKicker)
+        ready.addSubview(readyTitle)
+        ready.addSubview(readyHint)
+        ready.addSubview(startButton)
 
-        let content = NSView()
-        content.translatesAutoresizingMaskIntoConstraints = false
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        continueButton.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
-        content.addSubview(continueButton)
-        window.contentView = content
+        content.addSubview(permissions)
+        content.addSubview(engineCard)
+        content.addSubview(howTo)
+        content.addSubview(ready)
+        cards = [permissions, engineCard, howTo, ready]
 
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: content.topAnchor),
+            backdrop.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
-            continueButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            continueButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
-            continueButton.topAnchor.constraint(greaterThanOrEqualTo: stack.bottomAnchor, constant: 8),
+            kicker.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
+            kicker.topAnchor.constraint(equalTo: content.topAnchor, constant: 56),
+
+            title.leadingAnchor.constraint(equalTo: kicker.leadingAnchor),
+            title.topAnchor.constraint(equalTo: kicker.bottomAnchor, constant: 6),
+
+            subtitle.leadingAnchor.constraint(equalTo: kicker.leadingAnchor),
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 6),
+            subtitle.trailingAnchor.constraint(lessThanOrEqualTo: privacy.leadingAnchor, constant: -24),
+
+            privacy.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+            privacy.topAnchor.constraint(equalTo: content.topAnchor, constant: 60),
+
+            permissions.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            permissions.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 18),
+            permissions.heightAnchor.constraint(equalToConstant: 268),
+
+            engineCard.leadingAnchor.constraint(equalTo: permissions.trailingAnchor, constant: 16),
+            engineCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            engineCard.topAnchor.constraint(equalTo: permissions.topAnchor),
+            engineCard.heightAnchor.constraint(equalTo: permissions.heightAnchor),
+            engineCard.widthAnchor.constraint(equalTo: permissions.widthAnchor),
+
+            howTo.leadingAnchor.constraint(equalTo: permissions.leadingAnchor),
+            howTo.topAnchor.constraint(equalTo: permissions.bottomAnchor, constant: 16),
+            howTo.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
+
+            ready.leadingAnchor.constraint(equalTo: howTo.trailingAnchor, constant: 16),
+            ready.trailingAnchor.constraint(equalTo: engineCard.trailingAnchor),
+            ready.topAnchor.constraint(equalTo: howTo.topAnchor),
+            ready.bottomAnchor.constraint(equalTo: howTo.bottomAnchor),
+
+            // Permissions content
+            permissionKicker.leadingAnchor.constraint(equalTo: permissions.leadingAnchor, constant: 20),
+            permissionKicker.topAnchor.constraint(equalTo: permissions.topAnchor, constant: 20),
+
+            permissionTitle.leadingAnchor.constraint(equalTo: permissionKicker.leadingAnchor),
+            permissionTitle.topAnchor.constraint(equalTo: permissionKicker.bottomAnchor, constant: 6),
+
+            micRow.leadingAnchor.constraint(equalTo: permissions.leadingAnchor, constant: 20),
+            micRow.trailingAnchor.constraint(equalTo: permissions.trailingAnchor, constant: -20),
+            micRow.topAnchor.constraint(equalTo: permissionTitle.bottomAnchor, constant: 10),
+            micRow.heightAnchor.constraint(equalToConstant: 48),
+
+            screenRow.leadingAnchor.constraint(equalTo: micRow.leadingAnchor),
+            screenRow.trailingAnchor.constraint(equalTo: micRow.trailingAnchor),
+            screenRow.topAnchor.constraint(equalTo: micRow.bottomAnchor, constant: 4),
+            screenRow.heightAnchor.constraint(equalToConstant: 48),
+
+            accessibilityRow.leadingAnchor.constraint(equalTo: micRow.leadingAnchor),
+            accessibilityRow.trailingAnchor.constraint(equalTo: micRow.trailingAnchor),
+            accessibilityRow.topAnchor.constraint(equalTo: screenRow.bottomAnchor, constant: 4),
+            accessibilityRow.heightAnchor.constraint(equalToConstant: 48),
+
+            // Engine content
+            engineKicker.leadingAnchor.constraint(equalTo: engineCard.leadingAnchor, constant: 20),
+            engineKicker.topAnchor.constraint(equalTo: engineCard.topAnchor, constant: 20),
+
+            activity.trailingAnchor.constraint(equalTo: engineCard.trailingAnchor, constant: -20),
+            activity.centerYAnchor.constraint(equalTo: engineKicker.centerYAnchor),
+
+            engineTitle.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
+            engineTitle.topAnchor.constraint(equalTo: engineKicker.bottomAnchor, constant: 14),
+
+            engineDetail.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
+            engineDetail.topAnchor.constraint(equalTo: engineTitle.bottomAnchor, constant: 4),
+            engineDetail.trailingAnchor.constraint(lessThanOrEqualTo: engineCard.trailingAnchor, constant: -20),
+
+            engineButton.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
+            engineButton.bottomAnchor.constraint(equalTo: engineCard.bottomAnchor, constant: -20),
+            engineButton.widthAnchor.constraint(equalToConstant: 150),
+            engineButton.heightAnchor.constraint(equalToConstant: 34),
+
+            // How-to content
+            howToKicker.leadingAnchor.constraint(equalTo: howTo.leadingAnchor, constant: 20),
+            howToKicker.topAnchor.constraint(equalTo: howTo.topAnchor, constant: 20),
+
+            keys.leadingAnchor.constraint(equalTo: howToKicker.leadingAnchor),
+            keys.topAnchor.constraint(equalTo: howToKicker.bottomAnchor, constant: 12),
+
+            howToBody.leadingAnchor.constraint(equalTo: howToKicker.leadingAnchor),
+            howToBody.topAnchor.constraint(equalTo: keys.bottomAnchor, constant: 10),
+            howToBody.trailingAnchor.constraint(equalTo: howTo.trailingAnchor, constant: -20),
+
+            currentSample.leadingAnchor.constraint(equalTo: howToKicker.leadingAnchor),
+            currentSample.trailingAnchor.constraint(equalTo: howTo.trailingAnchor, constant: -20),
+            currentSample.topAnchor.constraint(equalTo: howToBody.bottomAnchor, constant: 12),
+            currentSample.heightAnchor.constraint(equalToConstant: 28),
+
+            nextSample.leadingAnchor.constraint(equalTo: currentSample.leadingAnchor),
+            nextSample.trailingAnchor.constraint(equalTo: currentSample.trailingAnchor),
+            nextSample.topAnchor.constraint(equalTo: currentSample.bottomAnchor, constant: 6),
+            nextSample.heightAnchor.constraint(equalToConstant: 28),
+
+            // Ready content
+            readyKicker.leadingAnchor.constraint(equalTo: ready.leadingAnchor, constant: 20),
+            readyKicker.topAnchor.constraint(equalTo: ready.topAnchor, constant: 20),
+
+            readyTitle.leadingAnchor.constraint(equalTo: readyKicker.leadingAnchor),
+            readyTitle.topAnchor.constraint(equalTo: readyKicker.bottomAnchor, constant: 8),
+
+            readyHint.leadingAnchor.constraint(equalTo: readyKicker.leadingAnchor),
+            readyHint.trailingAnchor.constraint(lessThanOrEqualTo: startButton.leadingAnchor, constant: -16),
+            readyHint.topAnchor.constraint(equalTo: readyTitle.bottomAnchor, constant: 6),
+
+            startButton.trailingAnchor.constraint(equalTo: ready.trailingAnchor, constant: -20),
+            startButton.bottomAnchor.constraint(equalTo: ready.bottomAnchor, constant: -20),
+            startButton.widthAnchor.constraint(equalToConstant: 150),
+            startButton.heightAnchor.constraint(equalToConstant: 38),
         ])
 
         return window
     }
 
-    private func sectionTitle(_ text: String) -> NSTextField {
+    private func highlightSample(_ text: String, fill: NSColor, ink: NSColor) -> NSView {
+        let sample = NSView()
+        sample.translatesAutoresizingMaskIntoConstraints = false
+        sample.wantsLayer = true
+        sample.layer?.backgroundColor = fill.cgColor
+        sample.layer?.cornerRadius = 8
+
         let label = NSTextField(labelWithString: text)
-        label.font = ReaderTheme.interfaceFont(size: 13, weight: .semibold)
-        label.textColor = ReaderTheme.textPrimary
-        return label
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = ReaderTheme.interfaceFont(size: 12)
+        label.textColor = ink
+        sample.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: sample.leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: sample.trailingAnchor, constant: -10),
+            label.centerYAnchor.constraint(equalTo: sample.centerYAnchor),
+        ])
+        return sample
+    }
+
+    private func animateCards() {
+        for (index, card) in cards.enumerated() {
+            card.alphaValue = 0
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(50 * index))
+                NSAnimationContext.beginGrouping()
+                NSAnimationContext.current.duration = 0.34
+                NSAnimationContext.current.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                card.animator().alphaValue = 1
+                NSAnimationContext.endGrouping()
+            }
+        }
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
@@ -211,64 +438,69 @@ final class OnboardingController: NSObject, NSWindowDelegate {
     }
 }
 
-/// One permission line: name, requiredness, live status, and a fix button.
+/// One permission line: icon, name, live status, and a fix button.
 @MainActor
 private final class PermissionRow: NSView {
-    private let dot = NSView()
-    private let statusLabel = NSTextField(labelWithString: "")
+    private let tile = NSView()
+    private let icon = NSImageView()
+    private let nameLabel = NSTextField(labelWithString: "")
+    private let statusLabel = NSTextField(labelWithAttributedString: NSAttributedString(string: ""))
+    private let button: PillButton
     private var grantHandler: (() -> Void)?
 
-    init(title: String, required: Bool, onGrant: @escaping () -> Void) {
+    init(title: String, symbol: String, onGrant: @escaping () -> Void) {
+        button = PillButton("Grant", kind: .secondary)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
+        grantHandler = onGrant
 
-        let nameLabel = NSTextField(labelWithString: title)
+        tile.translatesAutoresizingMaskIntoConstraints = false
+        tile.wantsLayer = true
+        tile.layer?.cornerRadius = 8
+        tile.layer?.backgroundColor = ReaderTheme.inset.cgColor
+
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        icon.contentTintColor = ReaderTheme.textSecondary
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+        nameLabel.stringValue = title
         nameLabel.font = ReaderTheme.interfaceFont(size: 13, weight: .medium)
         nameLabel.textColor = ReaderTheme.textPrimary
 
-        statusLabel.font = ReaderTheme.interfaceFont(size: 12)
-        statusLabel.textColor = ReaderTheme.textSecondary
-
-        let button = NSButton(
-            title: required ? "Grant…" : "Turn On…",
-            target: nil,
-            action: nil
-        )
-        button.bezelColor = ReaderTheme.readingStroke
-        grantHandler = onGrant
-        button.target = self
-        button.action = #selector(grantTapped)
-
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 4
-        dot.layer?.backgroundColor = ReaderTheme.danger.cgColor
-        nameLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        button.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.attributedStringValue = ReaderTheme.micro("NEEDED", size: 9)
 
-        addSubview(dot)
+        button.font = ReaderTheme.interfaceFont(size: 11, weight: .semibold)
+        button.onPress = { [weak self] in self?.grantHandler?() }
+
+        addSubview(tile)
+        tile.addSubview(icon)
         addSubview(nameLabel)
         addSubview(statusLabel)
         addSubview(button)
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 34),
+            tile.leadingAnchor.constraint(equalTo: leadingAnchor),
+            tile.centerYAnchor.constraint(equalTo: centerYAnchor),
+            tile.widthAnchor.constraint(equalToConstant: 30),
+            tile.heightAnchor.constraint(equalToConstant: 30),
 
-            dot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            dot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
+            icon.centerXAnchor.constraint(equalTo: tile.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: tile.centerYAnchor),
 
-            nameLabel.leadingAnchor.constraint(equalTo: dot.trailingAnchor, constant: 10),
-            nameLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            nameLabel.leadingAnchor.constraint(equalTo: tile.trailingAnchor, constant: 10),
+            nameLabel.topAnchor.constraint(equalTo: centerYAnchor, constant: -15),
 
-            statusLabel.leadingAnchor.constraint(equalTo: nameLabel.trailingAnchor, constant: 10),
-            statusLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            statusLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+            statusLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 1),
 
-            button.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            button.trailingAnchor.constraint(equalTo: trailingAnchor),
             button.centerYAnchor.constraint(equalTo: centerYAnchor),
+            button.widthAnchor.constraint(equalToConstant: 88),
+            button.heightAnchor.constraint(equalToConstant: 28),
         ])
     }
 
@@ -276,20 +508,25 @@ private final class PermissionRow: NSView {
         fatalError("PermissionRow is built in code")
     }
 
-    @objc private func grantTapped() {
-        grantHandler?()
-    }
-
     func update(granted: Bool, denied: Bool) {
         if granted {
-            dot.layer?.backgroundColor = ReaderTheme.readingStroke.cgColor
-            statusLabel.stringValue = "Granted"
+            tile.layer?.backgroundColor = ReaderTheme.amber.withAlphaComponent(0.14).cgColor
+            icon.contentTintColor = ReaderTheme.amber
+            statusLabel.attributedStringValue = ReaderTheme.micro("GRANTED", color: ReaderTheme.amber, size: 9)
+            button.title = "Allowed"
+            button.isEnabled = false
         } else if denied {
-            dot.layer?.backgroundColor = ReaderTheme.danger.cgColor
-            statusLabel.stringValue = "Missing — see System Settings"
+            tile.layer?.backgroundColor = ReaderTheme.danger.withAlphaComponent(0.12).cgColor
+            icon.contentTintColor = ReaderTheme.danger
+            statusLabel.attributedStringValue = ReaderTheme.micro("MISSING · SEE SETTINGS", color: ReaderTheme.danger, size: 9)
+            button.title = "Fix"
+            button.isEnabled = true
         } else {
-            dot.layer?.backgroundColor = ReaderTheme.textSecondary.cgColor
-            statusLabel.stringValue = "Not yet allowed"
+            tile.layer?.backgroundColor = ReaderTheme.inset.cgColor
+            icon.contentTintColor = ReaderTheme.textSecondary
+            statusLabel.attributedStringValue = ReaderTheme.micro("NEEDED", color: ReaderTheme.textSecondary, size: 9)
+            button.title = "Grant"
+            button.isEnabled = true
         }
     }
 }

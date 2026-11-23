@@ -10,8 +10,7 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
 
     private var window: NSWindow?
     private var modelField: NSTextField?
-    private var cardCheckbox: NSButton?
-    private var hotkeyLabel: NSTextField?
+    private var cardSwitch: PillSwitch?
     private var hotkeyRecorder: HotkeyRecorderView?
 
     func show() {
@@ -19,19 +18,21 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
             window = makeWindow()
         }
         refresh()
+        window?.ensureOnVisibleScreen()
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        window?.makeFirstResponder(nil)
     }
 
     private func refresh() {
         modelField?.stringValue = AppSettings.standard.model
-        hotkeyLabel?.stringValue = HotkeyManager.displayString(
+        hotkeyRecorder?.setKeys(HotkeyManager.displayString(
             keyCode: AppSettings.standard.hotkeyCode,
             modifiers: AppSettings.standard.hotkeyModifiers
-        )
+        ))
         hotkeyRecorder?.isRecording = false
-        cardCheckbox?.state = AppSettings.standard.cardVisible ? .on : .off
+        cardSwitch?.isOn = AppSettings.standard.cardVisible
     }
 
     // MARK: - Changes
@@ -49,15 +50,15 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
         onModelChange?()
     }
 
-    @objc private func toggleCard() {
-        AppSettings.standard.cardVisible = cardCheckbox?.state == .on
+    private func toggleCard(_ isOn: Bool) {
+        AppSettings.standard.cardVisible = isOn
         onCardVisibilityChange?()
     }
 
     private func recordHotkey(keyCode: UInt32, carbonModifiers: UInt32) {
         AppSettings.standard.hotkeyCode = keyCode
         AppSettings.standard.hotkeyModifiers = carbonModifiers
-        hotkeyLabel?.stringValue = HotkeyManager.displayString(keyCode: keyCode, modifiers: carbonModifiers)
+        hotkeyRecorder?.setKeys(HotkeyManager.displayString(keyCode: keyCode, modifiers: carbonModifiers))
         onHotkeyChange?(keyCode, carbonModifiers)
     }
 
@@ -65,95 +66,228 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 300),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Read Along Settings"
+        window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = ReaderTheme.canvas
         window.appearance = NSAppearance(named: .darkAqua)
+        window.minSize = NSSize(width: 700, height: 520)
         window.isReleasedWhenClosed = false
+        window.center()
 
-        let modelLabel = sectionTitle("Speech model")
+        let content = NSView()
+        content.wantsLayer = true
+        content.layer?.backgroundColor = ReaderTheme.canvas.cgColor
+        window.contentView = content
+
+        let backdrop = BackdropView()
+        content.addSubview(backdrop)
+
+        let kicker = Widget.microLabel("SETTINGS", color: ReaderTheme.amber)
+        let title = Widget.displayLabel("Make it yours.", size: 34, weight: .thin)
+        let subtitle = Widget.bodyLabel(
+            "The engine, the shortcut, and the floating widget.",
+            size: 12
+        )
+        content.addSubview(kicker)
+        content.addSubview(title)
+        content.addSubview(subtitle)
+
+        // Model card
+        let modelCard = Widget.card()
+        let modelKicker = Widget.microLabel("SPEECH MODEL")
         let modelField = NSTextField()
-        modelField.font = ReaderTheme.interfaceFont(size: 13)
+        modelField.translatesAutoresizingMaskIntoConstraints = false
+        modelField.stringValue = AppSettings.standard.model
+        modelField.font = ReaderTheme.display(size: 24, weight: .light)
         modelField.textColor = ReaderTheme.textPrimary
-        modelField.backgroundColor = ReaderTheme.surface
-        modelField.bezelStyle = .roundedBezel
+        modelField.isBordered = false
+        modelField.drawsBackground = false
+        modelField.focusRingType = .none
         modelField.delegate = self
+        modelField.placeholderString = "phonon-2"
         self.modelField = modelField
 
-        let modelHint = hint("Model names match fermion's serve models, e.g. phonon-2. Changing it restarts a running engine.")
+        let modelWell = NSView()
+        modelWell.translatesAutoresizingMaskIntoConstraints = false
+        modelWell.wantsLayer = true
+        modelWell.layer?.backgroundColor = ReaderTheme.inset.cgColor
+        modelWell.layer?.cornerRadius = 12
+        modelWell.layer?.borderWidth = 1
+        modelWell.layer?.borderColor = ReaderTheme.hairline.cgColor
+        modelWell.addSubview(modelField)
 
-        let hotkeyLabel = sectionTitle("Start hotkey")
-        let hotkeyRecorder = HotkeyRecorderView()
-        self.hotkeyRecorder = hotkeyRecorder
-        hotkeyRecorder.onRecord = { [weak self] keyCode, modifiers in
+        let modelHint = Widget.microLabel("CHANGING IT RESTARTS THE ENGINE", size: 9)
+
+        modelCard.addSubview(modelKicker)
+        modelCard.addSubview(modelWell)
+        modelCard.addSubview(modelHint)
+
+        // Hotkey card
+        let hotkeyCard = Widget.card()
+        let hotkeyKicker = Widget.microLabel("START HOTKEY")
+        let recorder = HotkeyRecorderView()
+        recorder.onRecord = { [weak self] keyCode, modifiers in
             self?.recordHotkey(keyCode: keyCode, carbonModifiers: modifiers)
         }
-        self.hotkeyLabel = hotkeyRecorder.label
+        hotkeyRecorder = recorder
+        let hotkeyHint = Widget.microLabel("CLICK TO RECORD · USED GLOBALLY", size: 9)
 
-        let cardLabel = sectionTitle("Status card")
-        let cardCheckbox = NSButton(
-            title: "Show the floating status card during sessions",
-            target: self,
-            action: #selector(toggleCard)
+        hotkeyCard.addSubview(hotkeyKicker)
+        hotkeyCard.addSubview(recorder)
+        hotkeyCard.addSubview(hotkeyHint)
+
+        // Status card
+        let statusCard = Widget.card()
+        let statusKicker = Widget.microLabel("STATUS CARD")
+        let statusTitle = Widget.titleLabel("Floating session widget", size: 15)
+        let statusBody = Widget.bodyLabel(
+            "Shows the engine state while you read in other apps.",
+            size: 11
         )
-        cardCheckbox.setButtonType(.switch)
-        cardCheckbox.font = ReaderTheme.interfaceFont(size: 12)
-        self.cardCheckbox = cardCheckbox
+        let cardSwitch = PillSwitch()
+        cardSwitch.onToggle = { [weak self] isOn in self?.toggleCard(isOn) }
+        self.cardSwitch = cardSwitch
 
-        let stack = NSStackView(views: [
-            modelLabel, modelField, modelHint,
-            hotkeyLabel, hotkeyRecorder,
-            cardLabel, cardCheckbox,
-        ])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 24, bottom: 16, right: 24)
+        statusCard.addSubview(statusKicker)
+        statusCard.addSubview(statusTitle)
+        statusCard.addSubview(statusBody)
+        statusCard.addSubview(cardSwitch)
 
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView = stack
+        // About card
+        let aboutCard = Widget.card()
+        let aboutKicker = Widget.microLabel("ABOUT")
+        let aboutTitle = Widget.displayLabel("Read Along", size: 20, weight: .light)
+        let aboutBody = Widget.bodyLabel("Local speech. No cloud. English.", size: 11)
+        let version = Widget.microLabel("VERSION 1.0 · PHONON-2", size: 9)
+
+        aboutCard.addSubview(aboutKicker)
+        aboutCard.addSubview(aboutTitle)
+        aboutCard.addSubview(aboutBody)
+        aboutCard.addSubview(version)
+
+        content.addSubview(modelCard)
+        content.addSubview(hotkeyCard)
+        content.addSubview(statusCard)
+        content.addSubview(aboutCard)
+
         NSLayoutConstraint.activate([
-            modelField.widthAnchor.constraint(equalToConstant: 220),
-            hotkeyRecorder.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+            backdrop.topAnchor.constraint(equalTo: content.topAnchor),
+            backdrop.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+
+            kicker.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
+            kicker.topAnchor.constraint(equalTo: content.topAnchor, constant: 56),
+
+            title.leadingAnchor.constraint(equalTo: kicker.leadingAnchor),
+            title.topAnchor.constraint(equalTo: kicker.bottomAnchor, constant: 6),
+
+            subtitle.leadingAnchor.constraint(equalTo: kicker.leadingAnchor),
+            subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+
+            modelCard.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            modelCard.topAnchor.constraint(equalTo: subtitle.bottomAnchor, constant: 18),
+            modelCard.heightAnchor.constraint(equalToConstant: 200),
+
+            hotkeyCard.leadingAnchor.constraint(equalTo: modelCard.trailingAnchor, constant: 16),
+            hotkeyCard.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            hotkeyCard.topAnchor.constraint(equalTo: modelCard.topAnchor),
+            hotkeyCard.heightAnchor.constraint(equalTo: modelCard.heightAnchor),
+            hotkeyCard.widthAnchor.constraint(equalTo: modelCard.widthAnchor),
+
+            statusCard.leadingAnchor.constraint(equalTo: modelCard.leadingAnchor),
+            statusCard.topAnchor.constraint(equalTo: modelCard.bottomAnchor, constant: 16),
+            statusCard.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
+
+            aboutCard.leadingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: 16),
+            aboutCard.trailingAnchor.constraint(equalTo: hotkeyCard.trailingAnchor),
+            aboutCard.topAnchor.constraint(equalTo: statusCard.topAnchor),
+            aboutCard.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor),
+            aboutCard.widthAnchor.constraint(equalTo: statusCard.widthAnchor),
+
+            // Model content
+            modelKicker.leadingAnchor.constraint(equalTo: modelCard.leadingAnchor, constant: 20),
+            modelKicker.topAnchor.constraint(equalTo: modelCard.topAnchor, constant: 20),
+
+            modelWell.leadingAnchor.constraint(equalTo: modelKicker.leadingAnchor),
+            modelWell.trailingAnchor.constraint(equalTo: modelCard.trailingAnchor, constant: -20),
+            modelWell.topAnchor.constraint(equalTo: modelKicker.bottomAnchor, constant: 12),
+            modelWell.heightAnchor.constraint(equalToConstant: 54),
+
+            modelField.leadingAnchor.constraint(equalTo: modelWell.leadingAnchor, constant: 14),
+            modelField.trailingAnchor.constraint(equalTo: modelWell.trailingAnchor, constant: -14),
+            modelField.centerYAnchor.constraint(equalTo: modelWell.centerYAnchor),
+
+            modelHint.leadingAnchor.constraint(equalTo: modelKicker.leadingAnchor),
+            modelHint.bottomAnchor.constraint(equalTo: modelCard.bottomAnchor, constant: -20),
+
+            // Hotkey content
+            hotkeyKicker.leadingAnchor.constraint(equalTo: hotkeyCard.leadingAnchor, constant: 20),
+            hotkeyKicker.topAnchor.constraint(equalTo: hotkeyCard.topAnchor, constant: 20),
+
+            recorder.leadingAnchor.constraint(equalTo: hotkeyKicker.leadingAnchor),
+            recorder.trailingAnchor.constraint(equalTo: hotkeyCard.trailingAnchor, constant: -20),
+            recorder.topAnchor.constraint(equalTo: hotkeyKicker.bottomAnchor, constant: 12),
+            recorder.heightAnchor.constraint(equalToConstant: 82),
+
+            hotkeyHint.leadingAnchor.constraint(equalTo: hotkeyKicker.leadingAnchor),
+            hotkeyHint.bottomAnchor.constraint(equalTo: hotkeyCard.bottomAnchor, constant: -20),
+
+            // Status content
+            statusKicker.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 20),
+            statusKicker.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 18),
+
+            statusTitle.leadingAnchor.constraint(equalTo: statusKicker.leadingAnchor),
+            statusTitle.topAnchor.constraint(equalTo: statusKicker.bottomAnchor, constant: 8),
+
+            statusBody.leadingAnchor.constraint(equalTo: statusKicker.leadingAnchor),
+            statusBody.topAnchor.constraint(equalTo: statusTitle.bottomAnchor, constant: 4),
+            statusBody.trailingAnchor.constraint(lessThanOrEqualTo: cardSwitch.leadingAnchor, constant: -16),
+
+            cardSwitch.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -20),
+            cardSwitch.centerYAnchor.constraint(equalTo: statusCard.centerYAnchor),
+            cardSwitch.widthAnchor.constraint(equalToConstant: 46),
+            cardSwitch.heightAnchor.constraint(equalToConstant: 26),
+
+            // About content
+            aboutKicker.leadingAnchor.constraint(equalTo: aboutCard.leadingAnchor, constant: 20),
+            aboutKicker.topAnchor.constraint(equalTo: aboutCard.topAnchor, constant: 18),
+
+            aboutTitle.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
+            aboutTitle.topAnchor.constraint(equalTo: aboutKicker.bottomAnchor, constant: 8),
+
+            aboutBody.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
+            aboutBody.topAnchor.constraint(equalTo: aboutTitle.bottomAnchor, constant: 3),
+
+            version.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
+            version.bottomAnchor.constraint(equalTo: aboutCard.bottomAnchor, constant: -20),
         ])
 
         return window
-    }
-
-    private func sectionTitle(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = ReaderTheme.interfaceFont(size: 13, weight: .semibold)
-        label.textColor = ReaderTheme.textPrimary
-        return label
-    }
-
-    private func hint(_ text: String) -> NSTextField {
-        let field = NSTextField(wrappingLabelWithString: text)
-        field.font = ReaderTheme.interfaceFont(size: 11)
-        field.textColor = ReaderTheme.textSecondary
-        field.preferredMaxLayoutWidth = 400
-        return field
     }
 }
 
 /// Click to arm, press the combination, done. Esc while armed cancels.
 @MainActor
-private final class HotkeyRecorderView: NSView {
+final class HotkeyRecorderView: NSView {
     var onRecord: ((UInt32, UInt32) -> Void)?
-
-    let label = NSTextField(labelWithString: "")
+    private let keys = KeycapsView()
+    private let promptLabel = Widget.microLabel("CLICK TO RECORD", size: 9)
 
     var isRecording = false {
         didSet {
-            label.stringValue = isRecording ? "Press keys…" : HotkeyManager.displayString(
-                keyCode: AppSettings.standard.hotkeyCode,
-                modifiers: AppSettings.standard.hotkeyModifiers
+            promptLabel.attributedStringValue = ReaderTheme.micro(
+                isRecording ? "PRESS KEYS…" : "CLICK TO RECORD",
+                color: isRecording ? ReaderTheme.amber : ReaderTheme.textSecondary,
+                size: 9
             )
+            layer?.borderColor = (isRecording ? ReaderTheme.amber : ReaderTheme.hairline).cgColor
             needsDisplay = true
             if isRecording {
                 window?.makeFirstResponder(self)
@@ -162,24 +296,22 @@ private final class HotkeyRecorderView: NSView {
     }
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+        super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.backgroundColor = ReaderTheme.surface.cgColor
-        layer?.cornerRadius = 8
-        layer?.borderColor = ReaderTheme.readingStroke.withAlphaComponent(0.3).cgColor
+        layer?.backgroundColor = ReaderTheme.inset.cgColor
+        layer?.cornerRadius = 12
         layer?.borderWidth = 1
+        layer?.borderColor = ReaderTheme.hairline.cgColor
 
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = ReaderTheme.interfaceFont(size: 13, weight: .medium)
-        label.textColor = ReaderTheme.textPrimary
-        label.alignment = .center
-        addSubview(label)
+        addSubview(keys)
+        addSubview(promptLabel)
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 30),
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            keys.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            keys.centerYAnchor.constraint(equalTo: centerYAnchor),
+            promptLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            promptLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
         ])
     }
 
@@ -207,5 +339,61 @@ private final class HotkeyRecorderView: NSView {
         guard modifiers != 0 else { return }
         isRecording = false
         onRecord?(UInt32(event.keyCode), modifiers)
+    }
+
+    func setKeys(_ display: String) {
+        keys.setKeys(display)
+    }
+}
+
+/// A small amber capsule switch used for the status-card setting.
+@MainActor
+final class PillSwitch: NSView {
+    var onToggle: ((Bool) -> Void)?
+
+    var isOn = false {
+        didSet { update() }
+    }
+
+    private let knob = NSView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 13
+        layer?.borderWidth = 1
+        layer?.borderColor = ReaderTheme.hairline.cgColor
+
+        knob.translatesAutoresizingMaskIntoConstraints = false
+        knob.wantsLayer = true
+        knob.layer?.cornerRadius = 9
+        knob.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.92).cgColor
+        addSubview(knob)
+
+        NSLayoutConstraint.activate([
+            knob.centerYAnchor.constraint(equalTo: centerYAnchor),
+            knob.widthAnchor.constraint(equalToConstant: 18),
+            knob.heightAnchor.constraint(equalToConstant: 18),
+        ])
+        update()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("PillSwitch is built in code")
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isOn.toggle()
+        onToggle?(isOn)
+    }
+
+    private func update() {
+        layer?.backgroundColor = (isOn ? ReaderTheme.amber : ReaderTheme.inset).cgColor
+        let offset: CGFloat = isOn ? 24 : 4
+        for constraint in constraints where constraint.firstItem === knob && constraint.firstAttribute == .leading {
+            constraint.isActive = false
+        }
+        knob.leadingAnchor.constraint(equalTo: leadingAnchor, constant: offset).isActive = true
     }
 }
