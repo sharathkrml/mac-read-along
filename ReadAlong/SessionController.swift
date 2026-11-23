@@ -22,6 +22,7 @@ final class SessionController {
     private let picker = WindowPicker()
     private let overlay = SessionOverlay()
     private let tracker = ReadingTracker()
+    private let statusCard = StatusCard()
 
     private var surface: Surface?
     private var lastThumb: [UInt8]?
@@ -56,10 +57,24 @@ final class SessionController {
         recaptureTask = nil
         engine.removeObserver(id: ObjectIdentifier(self))
         engine.stop()
+        statusCard.hide()
         surface = nil
         lastThumb = nil
         lastFrameSize = nil
         state = .idle
+    }
+
+    /// The menu bar can hide or restore the card mid-session.
+    func syncStatusCardVisibility() {
+        guard case .active(let windowID) = state,
+              AppSettings.standard.cardVisible,
+              let target = WindowInfo.current(windowID: windowID) else {
+            statusCard.hide()
+            return
+        }
+        if !statusCard.isShown {
+            statusCard.show(near: target.frame)
+        }
     }
 
     private func beginPicking() {
@@ -90,6 +105,22 @@ final class SessionController {
             self?.end()
         }
         overlay.setNotice("Reading the window…")
+
+        statusCard.onStop = { [weak self] in self?.end() }
+        statusCard.onRetry = { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                do {
+                    try await self.engine.start()
+                } catch {
+                    Log.note("engine retry failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        if AppSettings.standard.cardVisible {
+            statusCard.show(near: info.frame)
+        }
+        statusCard.update(state: .starting("Starting speech engine…"), model: AppSettings.standard.model)
 
         // The engine is shared with the reader window; one stream at a time.
         engine.stop()
@@ -123,6 +154,7 @@ final class SessionController {
 
     private func handleEngineState(_ state: SpeechEngineState) {
         guard case .active = self.state else { return }
+        statusCard.update(state: state, model: AppSettings.standard.model)
         switch state {
         case .listening:
             switch surface?.sentences.isEmpty {

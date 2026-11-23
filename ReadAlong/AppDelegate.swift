@@ -6,14 +6,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let engine = SpeechEngine()
     private let session: SessionController
     private let reader: ReaderController
+    private let settings = SettingsController()
+    private let onboarding: OnboardingController
     private var hotkey: HotkeyManager?
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
+    private var cardItem: NSMenuItem!
 
     override init() {
         session = SessionController(engine: engine)
         reader = ReaderController(engine: engine)
+        onboarding = OnboardingController(engine: engine)
         super.init()
+
+        settings.onModelChange = { [weak self] in self?.engine.applyModelChange() }
+        settings.onHotkeyChange = { [weak self] keyCode, modifiers in
+            _ = self?.hotkey?.reregister(keyCode: keyCode, modifiers: modifiers)
+        }
+        settings.onCardVisibilityChange = { [weak self] in
+            self?.session.syncStatusCardVisibility()
+            self?.refreshMenu()
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -42,17 +55,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleItem = NSMenuItem(
             title: "Start Session",
             action: #selector(toggleSession),
-            keyEquivalent: "r"
+            keyEquivalent: ""
         )
-        toggleItem.keyEquivalentModifierMask = [.command, .option]
         toggleItem.target = self
         menu.addItem(toggleItem)
+        menu.addItem(.separator())
+
+        let onboardingItem = NSMenuItem(
+            title: "Show Onboarding…",
+            action: #selector(showOnboarding),
+            keyEquivalent: ""
+        )
+        onboardingItem.target = self
+        menu.addItem(onboardingItem)
+        let settingsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(showSettings),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        cardItem = NSMenuItem(
+            title: "Hide Status Card",
+            action: #selector(toggleCard),
+            keyEquivalent: ""
+        )
+        cardItem.target = self
+        menu.addItem(cardItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
             title: "Quit Read Along",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         ))
+
+        // Submenu targets for the static items above.
+        menu.items.forEach { item in
+            if item.action == #selector(showOnboarding) {
+                item.target = self
+            }
+        }
         statusItem.menu = menu
 
         session.onStateChange = { [weak self] in self?.refreshMenu() }
@@ -60,6 +102,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey = HotkeyManager { [weak self] in self?.session.toggle() }
         let hotkeyStatus = hotkey?.register() ?? -1
         Log.note("hotkey register status: \(hotkeyStatus)")
+
+        // Permissions are re-checked on every launch: a revoked grant gets
+        // the onboarding fix path instead of a silently broken app.
+        let micGranted = Permissions.microphoneGranted()
+        let screenGranted = Permissions.screenRecordingGranted()
+        if !AppSettings.standard.onboardingCompleted || !micGranted || !screenGranted {
+            Log.note("onboarding shown: completed=\(AppSettings.standard.onboardingCompleted) mic=\(micGranted) screen=\(screenGranted)")
+            onboarding.show()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -81,6 +132,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         session.toggle()
     }
 
+    @objc private func showOnboarding() {
+        onboarding.show()
+    }
+
+    @objc private func showSettings() {
+        settings.show()
+    }
+
+    @objc private func toggleCard() {
+        AppSettings.standard.cardVisible.toggle()
+        session.syncStatusCardVisibility()
+        refreshMenu()
+    }
+
     private func refreshMenu() {
         switch session.state {
         case .idle:
@@ -90,5 +155,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .active:
             toggleItem.title = "End Session"
         }
+        cardItem.title = AppSettings.standard.cardVisible ? "Hide Status Card" : "Show Status Card"
     }
 }

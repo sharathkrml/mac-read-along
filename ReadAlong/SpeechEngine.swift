@@ -48,6 +48,66 @@ final class SpeechEngine {
         }
     }
 
+    private let port = 8737
+    /// The model name comes from a single setting; changing it restarts the
+    /// engine (issue #4).
+    private var model: String { AppSettings.standard.model }
+    private var server: Process?
+    private var socket: SpeechSocket?
+    private let audio = AudioCapture()
+
+    /// Installs and starts the sidecar without touching the microphone —
+    /// the onboarding engine step.
+    func prepare() async throws {
+        let binary = try await ensureRuntime()
+        try await ensureServer(binary: binary)
+    }
+
+    func start() async throws {
+        if case .starting = state { return }
+        if case .listening = state { return }
+        state = .starting("Starting speech engine…")
+
+        do {
+            try await Self.ensureMicrophonePermission()
+            try await prepare()
+            let socket = try await connect()
+            self.socket = socket
+
+            try await audio.start(
+                onPCM: { data in socket.sendPCM(data) },
+                onFailure: { [weak self] message in
+                    Task { @MainActor [weak self] in
+                        self?.fail(message)
+                    }
+                }
+            )
+            state = .listening
+        } catch {
+            audio.stop()
+            socket?.close()
+            socket = nil
+            state = .failed(error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// The setting changed: a live session restarts on the new model.
+    func applyModelChange() {
+        let wasListening = state == .listening
+        stop()
+        // The old sidecar would answer health checks with the old model; kill
+        // it so the next start boots the new one.
+        if let server, server.isRunning {
+            server.terminate()
+        }
+        server = nil
+        guard wasListening else { return }
+        Task { @MainActor in
+            try? await self.start()
+        }
+    }
+
     typealias StateHandler = @MainActor (SpeechEngineState) -> Void
     typealias TranscriptHandler = @MainActor (TranscriptUpdate) -> Void
 
@@ -78,42 +138,6 @@ final class SpeechEngine {
 
     private func emitTranscript(_ update: TranscriptUpdate) {
         for observer in transcriptObservers { observer.handler(update) }
-    }
-
-    private let port = 8737
-    private let model = "phonon-2"
-    private var server: Process?
-    private var socket: SpeechSocket?
-    private let audio = AudioCapture()
-
-    func start() async throws {
-        if case .starting = state { return }
-        if case .listening = state { return }
-        state = .starting("Starting speech engine…")
-
-        do {
-            try await Self.ensureMicrophonePermission()
-            let binary = try await ensureRuntime()
-            try await ensureServer(binary: binary)
-            let socket = try await connect()
-            self.socket = socket
-
-            try await audio.start(
-                onPCM: { data in socket.sendPCM(data) },
-                onFailure: { [weak self] message in
-                    Task { @MainActor [weak self] in
-                        self?.fail(message)
-                    }
-                }
-            )
-            state = .listening
-        } catch {
-            audio.stop()
-            socket?.close()
-            socket = nil
-            state = .failed(error.localizedDescription)
-            throw error
-        }
     }
 
     func stop() {
@@ -235,7 +259,6 @@ final class SpeechEngine {
         let process = Process()
         process.executableURL = binary
         process.arguments = ["serve", model, "--port", String(port)]
-
         let pipe = Pipe()
         process.standardError = pipe
         process.standardOutput = pipe
