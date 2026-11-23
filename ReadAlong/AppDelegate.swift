@@ -2,11 +2,19 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let session = SessionController()
-    private let reader = ReaderController()
+    /// One engine, one stream: the reader window and sessions share it.
+    private let engine = SpeechEngine()
+    private let session: SessionController
+    private let reader: ReaderController
     private var hotkey: HotkeyManager?
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
+
+    override init() {
+        session = SessionController(engine: engine)
+        reader = ReaderController(engine: engine)
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.note("launched")

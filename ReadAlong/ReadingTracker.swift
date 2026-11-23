@@ -36,6 +36,26 @@ final class ReadingTracker {
         onChange?()
     }
 
+    /// Re-capture replaces the sentence list; the cursor survives only when
+    /// the current sentence is still present, otherwise it waits for speech to
+    /// relocate (ADR-0003).
+    func reload(_ newSentences: [Sentence]) {
+        let previous = currentSentence
+        sentences = newSentences
+        cursor = previous.flatMap { old in
+            newSentences.firstIndex { $0.words == old.words }
+        }
+        onChange?()
+    }
+
+    /// Manual step (keyboard controls); speech can still relocate afterwards.
+    /// Stepping forward from an unknown cursor starts at the first sentence.
+    func moveCursor(by delta: Int) {
+        guard !sentences.isEmpty else { return }
+        let base = cursor ?? (delta > 0 ? -1 : 0)
+        setCursor(min(max(base + delta, 0), sentences.count - 1))
+    }
+
     func handle(_ update: TranscriptUpdate) {
         let incoming = SentenceIndex.words(in: update.text)
         if update.isFinal {

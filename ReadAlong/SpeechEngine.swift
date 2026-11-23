@@ -42,12 +42,43 @@ enum SpeechEngineError: LocalizedError {
 final class SpeechEngine {
     private(set) var state: SpeechEngineState = .idle {
         didSet {
-            if state != oldValue { onState?(state) }
+            if state != oldValue {
+                for observer in stateObservers { observer.handler(state) }
+            }
         }
     }
 
-    var onState: ((SpeechEngineState) -> Void)?
-    var onTranscript: ((TranscriptUpdate) -> Void)?
+    typealias StateHandler = @MainActor (SpeechEngineState) -> Void
+    typealias TranscriptHandler = @MainActor (TranscriptUpdate) -> Void
+
+    private var stateObservers: [(id: ObjectIdentifier, handler: StateHandler)] = []
+    private var transcriptObservers: [(id: ObjectIdentifier, handler: TranscriptHandler)] = []
+
+    /// The engine is shared between the reader window and read-along
+    /// sessions; both observe, and each ignores transcripts it did not start.
+    func addObserver(
+        id: ObjectIdentifier,
+        onState: StateHandler? = nil,
+        onTranscript: TranscriptHandler? = nil
+    ) {
+        if let onState {
+            stateObservers.removeAll { $0.id == id }
+            stateObservers.append((id, onState))
+        }
+        if let onTranscript {
+            transcriptObservers.removeAll { $0.id == id }
+            transcriptObservers.append((id, onTranscript))
+        }
+    }
+
+    func removeObserver(id: ObjectIdentifier) {
+        stateObservers.removeAll { $0.id == id }
+        transcriptObservers.removeAll { $0.id == id }
+    }
+
+    private func emitTranscript(_ update: TranscriptUpdate) {
+        for observer in transcriptObservers { observer.handler(update) }
+    }
 
     private let port = 8737
     private let model = "phonon-2"
@@ -309,11 +340,11 @@ final class SpeechEngine {
         switch type {
         case "partial":
             if let body = object["text"] as? String, !body.isEmpty {
-                onTranscript?(TranscriptUpdate(text: body, isFinal: false))
+                emitTranscript(TranscriptUpdate(text: body, isFinal: false))
             }
         case "final":
             if let body = object["text"] as? String, !body.isEmpty {
-                onTranscript?(TranscriptUpdate(text: body, isFinal: true))
+                emitTranscript(TranscriptUpdate(text: body, isFinal: true))
             }
         case "error":
             fail(object["message"] as? String ?? "The speech stream stopped.")

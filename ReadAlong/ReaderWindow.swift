@@ -13,15 +13,26 @@ final class ReaderController: NSObject, NSWindowDelegate {
     private var lastHighlighted = NSRange(location: 0, length: 0)
     private var highlighted = false
     private var isStarting = false
+    /// True while the reader window owns the shared engine's single stream.
+    private var readerStreaming = false
 
     private let tracker = ReadingTracker()
-    private let engine = SpeechEngine()
+    private let engine: SpeechEngine
 
-    override init() {
+    init(engine: SpeechEngine) {
+        self.engine = engine
         super.init()
         tracker.onChange = { [weak self] in self?.renderHighlights() }
-        engine.onState = { [weak self] state in self?.handleEngineState(state) }
-        engine.onTranscript = { [weak self] update in self?.tracker.handle(update) }
+        engine.addObserver(
+            id: ObjectIdentifier(self),
+            onState: { [weak self] state in self?.handleEngineState(state) },
+            onTranscript: { [weak self] update in self?.handleTranscript(update) }
+        )
+    }
+
+    private func handleTranscript(_ update: TranscriptUpdate) {
+        guard readerStreaming else { return }
+        tracker.handle(update)
     }
 
     func openDocumentPanel() {
@@ -249,6 +260,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
         Task { @MainActor in
             do {
                 try await engine.start()
+                readerStreaming = true
                 setStatus("Listening — read aloud", color: ReaderTheme.readingStroke)
             } catch {
                 setStatus(error.localizedDescription, color: ReaderTheme.danger)
@@ -259,6 +271,9 @@ final class ReaderController: NSObject, NSWindowDelegate {
     }
 
     private func handleEngineState(_ state: SpeechEngineState) {
+        if state != .listening {
+            readerStreaming = false
+        }
         switch state {
         case .idle:
             setStatus("Paused", color: ReaderTheme.textSecondary)

@@ -124,4 +124,69 @@ final class ReadingTrackerTests: XCTestCase {
         say(tracker, "mu", final: false)
         XCTAssertEqual(tracker.cursor, 3)
     }
+
+    // MARK: - Re-capture (reload)
+
+    private func makeSentences(_ texts: [String]) -> [Sentence] {
+        texts.enumerated().map { index, text in
+            Sentence(
+                text: text,
+                range: NSRange(location: index * 100, length: text.count),
+                words: SentenceIndex.words(in: text)
+            )
+        }
+    }
+
+    func testReloadKeepsCursorWhenCurrentSentenceSurvives() {
+        let tracker = makeTracker(fiveSentences)
+        say(tracker, "iota kappa lambda")
+
+        // Same text re-captured with different ranges.
+        tracker.reload(makeSentences([
+            "Alpha beta gamma delta",
+            "Epsilon zeta eta theta",
+            "Iota kappa lambda mu",
+            "Nu xi omicron pi",
+            "Rho sigma tau upsilon",
+        ]))
+        XCTAssertEqual(tracker.cursor, 2)
+
+        say(tracker, "nu xi omicron")
+        XCTAssertEqual(tracker.cursor, 3)
+    }
+
+    func testReloadDropsCursorWhenCurrentSentenceDisappears() {
+        let tracker = makeTracker(fiveSentences)
+        say(tracker, "iota kappa lambda")
+
+        tracker.reload(makeSentences([
+            "Alpha beta gamma delta",
+            "Epsilon zeta eta theta",
+            "Nu xi omicron pi",
+            "Rho sigma tau upsilon",
+        ]))
+        XCTAssertNil(tracker.cursor)
+
+        // No guessing: unrelated speech does not move the highlight.
+        say(tracker, "unrelated words here")
+        XCTAssertNil(tracker.cursor)
+
+        // Three words relocate onto the visible text again.
+        say(tracker, "rho sigma tau")
+        XCTAssertEqual(tracker.cursor, 3)
+    }
+
+    // MARK: - Manual movement
+
+    func testMoveCursorStepsAndClamps() {
+        let tracker = makeTracker(fiveSentences)
+        tracker.moveCursor(by: 1)
+        XCTAssertEqual(tracker.cursor, 0)
+        tracker.moveCursor(by: 3)
+        XCTAssertEqual(tracker.cursor, 3)
+        tracker.moveCursor(by: -10)
+        XCTAssertEqual(tracker.cursor, 0)
+        tracker.moveCursor(by: 99)
+        XCTAssertEqual(tracker.cursor, 4)
+    }
 }

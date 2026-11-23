@@ -4,6 +4,7 @@ import CoreGraphics
 struct WindowInfo: Identifiable, Equatable {
     let windowID: CGWindowID
     let ownerName: String
+    let ownerPID: pid_t
     /// Frame in AppKit global coordinates.
     let frame: CGRect
 
@@ -53,6 +54,7 @@ struct WindowInfo: Identifiable, Equatable {
         return WindowInfo(
             windowID: number,
             ownerName: dict[kCGWindowOwnerName as String] as? String ?? "Window",
+            ownerPID: pid,
             frame: ScreenCoordinates.appKitRect(fromCG: cgRect, primaryHeight: primaryHeight)
         )
     }
@@ -71,6 +73,7 @@ struct WindowInfo: Identifiable, Equatable {
         return WindowInfo(
             windowID: windowID,
             ownerName: dict[kCGWindowOwnerName as String] as? String ?? "Window",
+            ownerPID: (dict[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0,
             frame: ScreenCoordinates.appKitRect(fromCG: cgRect)
         )
     }
