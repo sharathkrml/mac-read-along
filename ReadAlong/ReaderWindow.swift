@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import UniformTypeIdentifiers
 
 /// The reader window: opens a local text/Markdown file, shows the paper-and-ink
@@ -7,6 +8,11 @@ import UniformTypeIdentifiers
 final class ReaderController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private var textView: NSTextView?
+    private var textScroll: NSScrollView?
+    private var pdfView: PDFView?
+    private var pdfHighlight: PDFHighlightView?
+    private var pdfSentences: [PDFSentence] = []
+    private var isPDF = false
     private var listenButton: NSButton?
     private var statusLabel: NSTextField?
     private var statusDot: NSView?
@@ -40,7 +46,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
     func openDocumentPanel() {
         NSApp.activate()
         let panel = NSOpenPanel()
-        var types: [UTType] = [.plainText, .text]
+        var types: [UTType] = [.plainText, .text, .pdf]
         if let markdown = UTType(filenameExtension: "md") {
             types.append(markdown)
         }
@@ -55,7 +61,13 @@ final class ReaderController: NSObject, NSWindowDelegate {
 
     func open(url: URL) {
         engine.stop()
+        readerStreaming = false
         isStarting = false
+
+        if url.pathExtension.lowercased() == "pdf" {
+            openPDF(url: url)
+            return
+        }
 
         let text: String
         do {
@@ -69,12 +81,106 @@ final class ReaderController: NSObject, NSWindowDelegate {
         showWindow()
         window?.title = url.deletingPathExtension().lastPathComponent
         install(text: text)
+        pdfSentences = []
         tracker.load(sentences: SentenceIndex.sentences(in: text))
         clearHighlights()
         setStatus("\(tracker.sentences.count) sentences · press Listen", color: ReaderTheme.textSecondary)
         updateListenButton()
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - PDF documents
+
+    private func openPDF(url: URL) {
+        guard let document = PDFDocument(url: url) else {
+            showWindow()
+            setStatus("Could not open \(url.lastPathComponent)", color: ReaderTheme.danger)
+            return
+        }
+
+        showWindow()
+        window?.title = url.deletingPathExtension().lastPathComponent
+        installPDF(document)
+
+        let sentences = PDFSurfaceBuilder.build(
+            pages: (0..<document.pageCount).map { document.page(at: $0)?.string }
+        )
+        pdfSentences = sentences
+        tracker.load(sentences: sentences.map(\.sentence))
+
+        if sentences.isEmpty {
+            // Text-based PDFs only: image-only scans have nothing to track.
+            clearHighlights()
+            setStatus(
+                "No selectable text in this PDF — image-only PDFs are not supported yet",
+                color: ReaderTheme.danger
+            )
+        } else {
+            setStatus("\(sentences.count) sentences · press Listen", color: ReaderTheme.textSecondary)
+        }
+        updateListenButton()
+        NSApp.activate()
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func installPDF(_ document: PDFDocument) {
+        isPDF = true
+        let view: PDFView
+        let highlight: PDFHighlightView
+        if let existing = pdfView, let existingHighlight = pdfHighlight {
+            view = existing
+            highlight = existingHighlight
+        } else {
+            view = PDFView()
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.displayDirection = .vertical
+            view.displaysPageBreaks = true
+            view.autoScales = true
+            view.backgroundColor = ReaderTheme.canvas
+
+            highlight = PDFHighlightView(frame: .zero)
+            highlight.autoresizingMask = [.width, .height]
+            view.addSubview(highlight)
+
+            guard let container = window?.contentView else { return }
+            container.addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: container.topAnchor),
+                view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+
+            pdfView = view
+            pdfHighlight = highlight
+
+            for name in [
+                NSNotification.Name.PDFViewPageChanged,
+                NSNotification.Name.PDFViewScaleChanged,
+            ] {
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(pdfLayoutChanged),
+                    name: name,
+                    object: view
+                )
+            }
+        }
+
+        textScroll?.isHidden = true
+        view.isHidden = false
+        view.document = document
+        // The highlight view is document-glued: track the PDFView's bounds.
+        highlight.frame = CGRect(origin: .zero, size: view.bounds.size)
+        renderHighlights()
+    }
+
+    @objc private func pdfLayoutChanged() {
+        if let view = pdfView, let highlight = pdfHighlight {
+            highlight.frame = CGRect(origin: .zero, size: view.bounds.size)
+        }
+        renderHighlights()
     }
 
     func shutdown() {
@@ -119,6 +225,7 @@ final class ReaderController: NSObject, NSWindowDelegate {
         scroll.drawsBackground = false
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 96, right: 0)
+        textScroll = scroll
 
         let textView = NSTextView()
         textView.isEditable = false
@@ -213,6 +320,10 @@ final class ReaderController: NSObject, NSWindowDelegate {
     }
 
     private func install(text: String) {
+        isPDF = false
+        pdfView?.isHidden = true
+        textScroll?.isHidden = false
+
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 8
         paragraph.paragraphSpacing = 14
@@ -309,6 +420,11 @@ final class ReaderController: NSObject, NSWindowDelegate {
     // MARK: - Highlights
 
     private func clearHighlights() {
+        if isPDF {
+            pdfHighlight?.currentRects = []
+            pdfHighlight?.nextRects = []
+            return
+        }
         guard let layoutManager = textView?.layoutManager, highlighted else { return }
         removeHighlight(in: lastHighlighted, from: layoutManager)
         lastHighlighted = NSRange(location: 0, length: 0)
@@ -328,6 +444,10 @@ final class ReaderController: NSObject, NSWindowDelegate {
     }
 
     private func renderHighlights() {
+        if isPDF {
+            renderPDFHighlights()
+            return
+        }
         guard let textView, let layoutManager = textView.layoutManager else { return }
 
         if highlighted {
@@ -408,6 +528,71 @@ final class ReaderController: NSObject, NSWindowDelegate {
         manualScrollHoldUntil = Date().addingTimeInterval(1.5)
     }
 
+    func moveCursor(by delta: Int) {
+        tracker.moveCursor(by: delta)
+    }
+
+    /// PDF highlights come straight from PDFKit selections: exact line
+    /// rectangles in the PDFView's own space, drawn by the document-glued
+    /// highlight view.
+    private func renderPDFHighlights() {
+        guard let pdfView, let highlight = pdfHighlight else { return }
+
+        let cursor = tracker.cursor
+        var current: [CGRect] = []
+        var next: [CGRect] = []
+
+        if let cursor, pdfSentences.indices.contains(cursor) {
+            current = pdfLineRects(for: pdfSentences[cursor])
+        }
+        if let nextIndex = cursor.map({ $0 + 1 }), pdfSentences.indices.contains(nextIndex) {
+            next = pdfLineRects(for: pdfSentences[nextIndex])
+        }
+
+        highlight.currentRects = current
+        highlight.nextRects = next
+
+        if !current.isEmpty {
+            autoScrollPDF(byRects: current)
+        }
+    }
+
+    private func pdfLineRects(for sentence: PDFSentence) -> [CGRect] {
+        guard let pdfView,
+              let document = pdfView.document,
+              let page = document.page(at: sentence.page),
+              let selection = page.selection(for: sentence.localRange) else { return [] }
+        // shortcut: PDFKit gives one union rect per selection, so a sentence
+        // wrapped across lines highlights its bounding box — decompose per
+        // line if that reads poorly over real documents.
+        let pageRect = selection.bounds(for: page)
+        return [pdfView.convert(pageRect, from: page)]
+    }
+
+    /// PDF auto-scroll: same thresholds as text, on the PDFView's own
+    /// scroll view, animated.
+    private func autoScrollPDF(byRects rects: [CGRect]) {
+        guard Date() >= manualScrollHoldUntil,
+              let pdfView,
+              let clipView = pdfView.enclosingScrollView?.contentView else { return }
+
+        let union = rects.dropFirst().reduce(rects[0], { CGRectUnion($0, $1) })
+        let visible = pdfView.visibleRect
+
+        guard let pixels = AutoScrollPlanner.scrollDownPixels(
+            sentenceTop: union.minY - visible.minY,
+            sentenceBottom: union.maxY - visible.minY,
+            viewportHeight: visible.height
+        ), pixels > 0 else { return }
+
+        let newOrigin = NSPoint(x: clipView.bounds.origin.x, y: clipView.bounds.origin.y + pixels)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.allowsImplicitAnimation = true
+            clipView.animator().setBoundsOrigin(newOrigin)
+        }
+    }
+
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
@@ -429,6 +614,21 @@ private extension NSRange {
 
 final class ReaderContainerView: NSView {
     weak var controller: ReaderController?
+
+    /// Arrow keys advance and retreat the reading cursor so highlighting can
+    /// be verified without a microphone (issue #3).
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 125, 124: // down, right
+            controller?.moveCursor(by: 1)
+        case 126, 123: // up, left
+            controller?.moveCursor(by: -1)
+        default:
+            super.keyDown(with: event)
+        }
+    }
 
     override func scrollWheel(with event: NSEvent) {
         controller?.userDidScroll()
