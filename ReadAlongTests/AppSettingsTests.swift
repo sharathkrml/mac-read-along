@@ -16,7 +16,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.hotkeyCode, AppSettings.defaultKeyCode)
         XCTAssertEqual(settings.hotkeyModifiers, AppSettings.defaultModifiers)
         XCTAssertTrue(settings.cardVisible)
-        XCTAssertFalse(settings.onboardingCompleted)
+        XCTAssertEqual(settings.microphoneID, "")
     }
 
     func testValuesPersistAndRoundTrip() {
@@ -27,7 +27,7 @@ final class AppSettingsTests: XCTestCase {
         settings.hotkeyCode = 11
         settings.hotkeyModifiers = 4352 // plain command key
         settings.cardVisible = false
-        settings.onboardingCompleted = true
+        settings.microphoneID = "BuiltInMicrophoneDevice"
 
         // A second instance over the same domain sees the stored values.
         settings = AppSettings(defaults: defaults)
@@ -35,7 +35,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.hotkeyCode, 11)
         XCTAssertEqual(settings.hotkeyModifiers, 4352)
         XCTAssertFalse(settings.cardVisible)
-        XCTAssertTrue(settings.onboardingCompleted)
+        XCTAssertEqual(settings.microphoneID, "BuiltInMicrophoneDevice")
     }
 
     func testModelEmptyStringFallsBackToDefault() {

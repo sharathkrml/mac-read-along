@@ -26,10 +26,6 @@ enum ReaderTheme {
     static let amber = NSColor(hex: 0xF5A93B)
     static let amberSoft = NSColor(hex: 0xFFD28A)
     static let inkOnAmber = NSColor(hex: 0x1A1206)
-    static let readingFill = NSColor(hex: 0x4A3514).withAlphaComponent(0.9)
-    static let readingInk = NSColor(hex: 0xFFE2A6)
-    static let readingStroke = NSColor(hex: 0xF5B44A)
-    static let nextFill = NSColor(hex: 0xF5A93B).withAlphaComponent(0.10)
 
     // Data accents
     static let danger = NSColor(hex: 0xE07A7A)

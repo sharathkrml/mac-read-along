@@ -7,11 +7,14 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
     var onModelChange: (() -> Void)?
     var onHotkeyChange: ((UInt32, UInt32) -> Void)?
     var onCardVisibilityChange: (() -> Void)?
+    var onMicrophoneChange: (() -> Void)?
 
     private var window: NSWindow?
     private var modelField: NSTextField?
     private var cardSwitch: PillSwitch?
     private var hotkeyRecorder: HotkeyRecorderView?
+    private var micPicker: NSPopUpButton?
+    private var micHint: NSTextField?
 
     func show() {
         if window == nil {
@@ -33,6 +36,27 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
         ))
         hotkeyRecorder?.isRecording = false
         cardSwitch?.isOn = AppSettings.standard.cardVisible
+        refreshMicrophone()
+    }
+
+    /// Rebuilt on each show: devices plugged in or removed while the window
+    /// was closed must appear (or select the system default).
+    private func refreshMicrophone() {
+        guard let micPicker else { return }
+        micPicker.setMicrophoneChoices(preferredID: AppSettings.standard.microphoneID)
+        updateMicrophoneHint()
+    }
+
+    /// Names the device capture actually resolves to, so "System default" is
+    /// never a mystery.
+    private func updateMicrophoneHint() {
+        let name = MicrophoneCatalog.resolve(preferredID: AppSettings.standard.microphoneID)?.localizedName
+        micHint?.attributedStringValue = ReaderTheme.micro(
+            name.map { "USING · \($0)" } ?? "NO INPUT DEVICE FOUND",
+            color: name == nil ? ReaderTheme.danger : ReaderTheme.textSecondary,
+            size: 9
+        )
+        micHint?.toolTip = name
     }
 
     // MARK: - Changes
@@ -55,6 +79,12 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
         onCardVisibilityChange?()
     }
 
+    @objc private func microphoneChanged() {
+        AppSettings.standard.microphoneID = micPicker?.selectedItem?.representedObject as? String ?? ""
+        updateMicrophoneHint()
+        onMicrophoneChange?()
+    }
+
     private func recordHotkey(keyCode: UInt32, carbonModifiers: UInt32) {
         AppSettings.standard.hotkeyCode = keyCode
         AppSettings.standard.hotkeyModifiers = carbonModifiers
@@ -66,7 +96,7 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -76,7 +106,7 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
         window.titlebarAppearsTransparent = true
         window.backgroundColor = ReaderTheme.canvas
         window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 700, height: 520)
+        window.minSize = NSSize(width: 700, height: 660)
         window.isReleasedWhenClosed = false
         window.center()
 
@@ -91,7 +121,7 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
         let kicker = Widget.microLabel("SETTINGS", color: ReaderTheme.amber)
         let title = Widget.displayLabel("Make it yours.", size: 34, weight: .thin)
         let subtitle = Widget.bodyLabel(
-            "The engine, the shortcut, and the floating widget.",
+            "The engine, the microphone, the shortcut, and the floating widget.",
             size: 12
         )
         content.addSubview(kicker)
@@ -142,6 +172,25 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
         hotkeyCard.addSubview(recorder)
         hotkeyCard.addSubview(hotkeyHint)
 
+        // Microphone card
+        let micCard = Widget.card()
+        let micKicker = Widget.microLabel("MICROPHONE")
+        let picker = NSPopUpButton()
+        picker.translatesAutoresizingMaskIntoConstraints = false
+        picker.controlSize = .large
+        picker.font = ReaderTheme.interfaceFont(size: 13)
+        picker.target = self
+        picker.action = #selector(microphoneChanged)
+        picker.addItem(withTitle: "System default")
+        micPicker = picker
+        let hint = Widget.microLabel("USING", size: 9)
+        hint.lineBreakMode = .byTruncatingTail
+        micHint = hint
+
+        micCard.addSubview(micKicker)
+        micCard.addSubview(picker)
+        micCard.addSubview(hint)
+
         // Status card
         let statusCard = Widget.card()
         let statusKicker = Widget.microLabel("STATUS CARD")
@@ -173,6 +222,7 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
 
         content.addSubview(modelCard)
         content.addSubview(hotkeyCard)
+        content.addSubview(micCard)
         content.addSubview(statusCard)
         content.addSubview(aboutCard)
 
@@ -201,8 +251,13 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
             hotkeyCard.heightAnchor.constraint(equalTo: modelCard.heightAnchor),
             hotkeyCard.widthAnchor.constraint(equalTo: modelCard.widthAnchor),
 
+            micCard.leadingAnchor.constraint(equalTo: modelCard.leadingAnchor),
+            micCard.trailingAnchor.constraint(equalTo: hotkeyCard.trailingAnchor),
+            micCard.topAnchor.constraint(equalTo: modelCard.bottomAnchor, constant: 16),
+            micCard.heightAnchor.constraint(equalToConstant: 100),
+
             statusCard.leadingAnchor.constraint(equalTo: modelCard.leadingAnchor),
-            statusCard.topAnchor.constraint(equalTo: modelCard.bottomAnchor, constant: 16),
+            statusCard.topAnchor.constraint(equalTo: micCard.bottomAnchor, constant: 16),
             statusCard.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
 
             aboutCard.leadingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: 16),
@@ -238,6 +293,18 @@ final class SettingsController: NSObject, NSTextFieldDelegate {
 
             hotkeyHint.leadingAnchor.constraint(equalTo: hotkeyKicker.leadingAnchor),
             hotkeyHint.bottomAnchor.constraint(equalTo: hotkeyCard.bottomAnchor, constant: -20),
+
+            // Microphone content
+            micKicker.leadingAnchor.constraint(equalTo: micCard.leadingAnchor, constant: 20),
+            micKicker.topAnchor.constraint(equalTo: micCard.topAnchor, constant: 18),
+
+            picker.leadingAnchor.constraint(equalTo: micKicker.leadingAnchor),
+            picker.topAnchor.constraint(equalTo: micKicker.bottomAnchor, constant: 8),
+            picker.widthAnchor.constraint(equalToConstant: 300),
+
+            hint.leadingAnchor.constraint(equalTo: picker.trailingAnchor, constant: 14),
+            hint.trailingAnchor.constraint(lessThanOrEqualTo: micCard.trailingAnchor, constant: -20),
+            hint.centerYAnchor.constraint(equalTo: picker.centerYAnchor),
 
             // Status content
             statusKicker.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 20),

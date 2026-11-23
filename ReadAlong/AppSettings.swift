@@ -43,9 +43,10 @@ final class AppSettings {
         set { defaults.set(newValue, forKey: Keys.cardVisible) }
     }
 
-    var onboardingCompleted: Bool {
-        get { defaults.bool(forKey: Keys.onboardingCompleted) }
-        set { defaults.set(newValue, forKey: Keys.onboardingCompleted) }
+    /// The chosen input device's unique ID; empty means the system default.
+    var microphoneID: String {
+        get { defaults.string(forKey: Keys.microphoneID) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.microphoneID) }
     }
 
     private enum Keys {
@@ -53,6 +54,6 @@ final class AppSettings {
         static let hotkeyCode = "settings.hotkeyCode"
         static let hotkeyModifiers = "settings.hotkeyModifiers"
         static let cardVisible = "settings.cardVisible"
-        static let onboardingCompleted = "settings.onboardingCompleted"
+        static let microphoneID = "settings.microphoneID"
     }
 }

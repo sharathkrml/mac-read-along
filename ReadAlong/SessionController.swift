@@ -27,6 +27,7 @@ final class SessionController {
     private var surface: Surface?
     private var lastThumb: [UInt8]?
     private var lastFrameSize: CGSize?
+    private var lastRenderedCursor: Int?
     private var recaptureTask: Task<Void, Never>?
     /// Manual scrolling suppresses auto-scroll until it settles.
     private var manualScrollHoldUntil = Date.distantPast
@@ -36,6 +37,7 @@ final class SessionController {
     init(engine: SpeechEngine) {
         self.engine = engine
         tracker.onChange = { [weak self] in self?.render() }
+        statusCard.onMicrophoneChange = { [weak self] in self?.engine.applyMicrophoneChange() }
     }
 
     func toggle() {
@@ -50,6 +52,13 @@ final class SessionController {
         }
     }
 
+    /// Starts the picker; the launcher's Start reading button calls this.
+    /// No-op unless idle, so it can never end a running session.
+    func begin() {
+        guard state == .idle else { return }
+        beginPicking()
+    }
+
     func end() {
         picker.end()
         overlay.end()
@@ -61,6 +70,7 @@ final class SessionController {
         surface = nil
         lastThumb = nil
         lastFrameSize = nil
+        lastRenderedCursor = nil
         state = .idle
     }
 
@@ -100,6 +110,7 @@ final class SessionController {
     private func attach(to info: WindowInfo) {
         Log.note("attached to window \(info.windowID) \(info.ownerName)")
         picker.end()
+        lastRenderedCursor = nil
         state = .active(info.windowID)
         overlay.begin(window: info) { [weak self] in
             self?.end()
@@ -120,14 +131,18 @@ final class SessionController {
         if AppSettings.standard.cardVisible {
             statusCard.show(near: info.frame)
         }
-        statusCard.update(state: .starting("Starting speech engine…"), model: AppSettings.standard.model)
+        statusCard.update(state: .starting("Starting speech engine…"))
 
-        // The engine is shared with the reader window; one stream at a time.
+        // The engine is shared with the launcher; one stream at a time.
         engine.stop()
         engine.addObserver(
             id: ObjectIdentifier(self),
             onState: { [weak self] state in self?.handleEngineState(state) },
-            onTranscript: { [weak self] update in self?.tracker.handle(update) }
+            onTranscript: { [weak self] update in
+                self?.tracker.handle(update)
+                self?.statusCard.updateTranscript(update.text, isFinal: update.isFinal)
+            },
+            onLevel: { [weak self] level in self?.statusCard.addLevel(level) }
         )
 
         Task { @MainActor [weak self] in
@@ -154,7 +169,7 @@ final class SessionController {
 
     private func handleEngineState(_ state: SpeechEngineState) {
         guard case .active = self.state else { return }
-        statusCard.update(state: state, model: AppSettings.standard.model)
+        statusCard.update(state: state)
         switch state {
         case .listening:
             switch surface?.sentences.isEmpty {
@@ -184,36 +199,38 @@ final class SessionController {
     }
 
     private func captureAndLoad(force: Bool) async {
-        guard case .active(let windowID) = state else { return }
+        guard case .active(let windowID) = state,
+              let current = WindowInfo.current(windowID: windowID) else { return }
+
+        // A resize changes the line geometry even when the content is the same,
+        // so it forces a fresh read; ordinary ticks only re-read on movement.
+        let resized = lastFrameSize != current.frame.size
+        lastFrameSize = current.frame.size
 
         let frame: CapturedSurface
         do {
-            frame = try await WindowCapture.capture(windowID: windowID)
+            frame = try await WindowCapture.capture(
+                windowID: windowID,
+                previousThumb: lastThumb,
+                force: force || resized
+            )
         } catch {
             // Transient failures (minimized, mid-move) keep the last surface.
             Log.note("capture failed: \(error.localizedDescription)")
             return
         }
+        overlay.setTone(SurfaceTone.classify(frame.thumb))
 
-        guard case .active = state,
-        let current = WindowInfo.current(windowID: windowID) else { return }
-
-        let contentChanged = force
-            || lastThumb == nil
-            || FrameDifference.isMeaningfulChange(FrameDifference.score(lastThumb ?? [], frame.thumb))
-        let resized = lastFrameSize != current.frame.size
-        lastFrameSize = current.frame.size
-
-        guard contentChanged || resized else { return }
+        guard case .active = state, let lines = frame.lines else { return }
         lastThumb = frame.thumb
 
         // A content change we did not just cause ourselves is the reader
         // scrolling manually: back off from auto-scroll while it settles.
-        if contentChanged, !force, Date() > lastAutoScrollAt.addingTimeInterval(0.9) {
+        if !force, !resized, Date() > lastAutoScrollAt.addingTimeInterval(0.9) {
             manualScrollHoldUntil = Date().addingTimeInterval(2.5)
         }
 
-        let newSurface = SurfaceBuilder.build(lines: frame.lines)
+        let newSurface = SurfaceBuilder.build(lines: lines)
         surface = newSurface
 
         if newSurface.sentences.isEmpty {
@@ -242,6 +259,13 @@ final class SessionController {
         }
 
         let cursor = tracker.cursor
+        if cursor != lastRenderedCursor {
+            lastRenderedCursor = cursor
+            let detail = cursor.map {
+                "\($0) rects=\(surface.rects.indices.contains($0) ? surface.rects[$0].count : -1)"
+            } ?? "nil"
+            Log.note("cursor: \(detail)")
+        }
         let currentRects = rects(at: cursor)
         overlay.setHighlights(HighlightRects(
             current: currentRects,

@@ -9,12 +9,8 @@ A period in which the app listens to the reader's speech and tracks their positi
 _Avoid_: reading mode, listening mode
 
 **Reading surface**:
-A window whose text is being tracked — an app window such as a browser or editor, or the app's own reader window.
+A window whose text is being tracked — an app window such as a browser, an editor, or a PDF open in Preview.
 _Avoid_: source, target, document
-
-**Reader window**:
-The app's own window for displaying a local text, Markdown, or PDF file for reading.
-_Avoid_: viewer, library
 
 **Reading cursor**:
 The app's current belief about which sentence the reader is on.

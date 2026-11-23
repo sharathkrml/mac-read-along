@@ -56,6 +56,9 @@ final class SpeechEngine {
     private var server: Process?
     private var socket: SpeechSocket?
     private let audio = AudioCapture()
+    /// Which consumer opened the microphone stream, so onboarding can shut
+    /// down its test without killing a live session.
+    private(set) var streamOwner: ObjectIdentifier?
 
     /// Installs and starts the sidecar without touching the microphone —
     /// the onboarding engine step.
@@ -64,7 +67,7 @@ final class SpeechEngine {
         try await ensureServer(binary: binary)
     }
 
-    func start() async throws {
+    func start(owner: ObjectIdentifier? = nil) async throws {
         if case .starting = state { return }
         if case .listening = state { return }
         state = .starting("Starting speech engine…")
@@ -75,14 +78,8 @@ final class SpeechEngine {
             let socket = try await connect()
             self.socket = socket
 
-            try await audio.start(
-                onPCM: { data in socket.sendPCM(data) },
-                onFailure: { [weak self] message in
-                    Task { @MainActor [weak self] in
-                        self?.fail(message)
-                    }
-                }
-            )
+            try await startAudio(socket: socket)
+            streamOwner = owner
             state = .listening
         } catch {
             audio.stop()
@@ -97,6 +94,7 @@ final class SpeechEngine {
     /// The setting changed: a live session restarts on the new model.
     func applyModelChange() {
         let wasListening = state == .listening
+        let owner = streamOwner
         stop()
         // The old sidecar would answer health checks with the old model; kill
         // it so the next start boots the new one.
@@ -106,22 +104,58 @@ final class SpeechEngine {
         server = nil
         guard wasListening else { return }
         Task { @MainActor in
-            try? await self.start()
+            try? await self.start(owner: owner)
         }
+    }
+
+    /// The setting changed: reopen the microphone on the new device without
+    /// interrupting the speech engine.
+    func applyMicrophoneChange() {
+        guard state == .listening, let socket else { return }
+        audio.stop()
+        state = .starting("Switching microphone…")
+        Task { @MainActor in
+            do {
+                try await self.startAudio(socket: socket)
+                self.state = .listening
+            } catch {
+                self.fail(error.localizedDescription)
+            }
+        }
+    }
+
+    private func startAudio(socket: SpeechSocket) async throws {
+        try await audio.start(
+            deviceID: AppSettings.standard.microphoneID,
+            onPCM: { data in socket.sendPCM(data) },
+            onFailure: { [weak self] message in
+                Task { @MainActor [weak self] in
+                    self?.fail(message)
+                }
+            },
+            onLevel: { [weak self] level in
+                Task { @MainActor [weak self] in
+                    self?.emitLevel(level)
+                }
+            }
+        )
     }
 
     typealias StateHandler = @MainActor (SpeechEngineState) -> Void
     typealias TranscriptHandler = @MainActor (TranscriptUpdate) -> Void
+    typealias LevelHandler = @MainActor (Float) -> Void
 
     private var stateObservers: [(id: ObjectIdentifier, handler: StateHandler)] = []
     private var transcriptObservers: [(id: ObjectIdentifier, handler: TranscriptHandler)] = []
+    private var levelObservers: [(id: ObjectIdentifier, handler: LevelHandler)] = []
 
     /// The engine is shared between the reader window and read-along
     /// sessions; both observe, and each ignores transcripts it did not start.
     func addObserver(
         id: ObjectIdentifier,
         onState: StateHandler? = nil,
-        onTranscript: TranscriptHandler? = nil
+        onTranscript: TranscriptHandler? = nil,
+        onLevel: LevelHandler? = nil
     ) {
         if let onState {
             stateObservers.removeAll { $0.id == id }
@@ -131,21 +165,31 @@ final class SpeechEngine {
             transcriptObservers.removeAll { $0.id == id }
             transcriptObservers.append((id, onTranscript))
         }
+        if let onLevel {
+            levelObservers.removeAll { $0.id == id }
+            levelObservers.append((id, onLevel))
+        }
     }
 
     func removeObserver(id: ObjectIdentifier) {
         stateObservers.removeAll { $0.id == id }
         transcriptObservers.removeAll { $0.id == id }
+        levelObservers.removeAll { $0.id == id }
     }
 
     private func emitTranscript(_ update: TranscriptUpdate) {
         for observer in transcriptObservers { observer.handler(update) }
     }
 
+    private func emitLevel(_ level: Float) {
+        for observer in levelObservers { observer.handler(level) }
+    }
+
     func stop() {
         audio.stop()
         socket?.close()
         socket = nil
+        streamOwner = nil
         if case .failed = state { return }
         state = .idle
     }
@@ -268,17 +312,55 @@ final class SpeechEngine {
         }
     }
 
+    /// The sidecar outlives the app when the app is killed by a signal or
+    /// crashes: it is reparented to launchd and keeps the model cached. Four
+    /// of them piled up and exhausted memory on a 16 GB machine, taking
+    /// WindowServer down with it. Reap every engine this install started
+    /// except the one this app owns.
+    private func reapOrphanedServers(binary: URL) async {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        process.arguments = ["-f", binary.path + " serve"]
+        let output = Pipe()
+        process.standardOutput = output
+        do { try process.run() } catch { return }
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        // The read above already returns once pgrep closes its output; waiting
+        // for its exit can hang the main run loop, and its status is unused.
+        let keep = server?.processIdentifier
+        let stale = String(decoding: data, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .compactMap { pid_t(String($0)) }
+            .filter { $0 != keep }
+        guard !stale.isEmpty else { return }
+
+        Log.note("reaping \(stale.count) stale speech engine(s)")
+        for pid in stale { kill(pid, SIGTERM) }
+        try? await Task.sleep(for: .milliseconds(500))
+        for pid in stale where kill(pid, 0) == 0 {
+            kill(pid, SIGKILL)
+        }
+    }
+
     private func ensureServer(binary: URL) async throws {
+        await reapOrphanedServers(binary: binary)
         if await isHealthy() { return }
 
         if let server, server.isRunning {
             server.terminate()
-            server.waitUntilExit()
+            // Never block the main actor on a sidecar that ignores SIGTERM;
+            // give it two seconds, then take it down.
+            for _ in 0..<20 {
+                if !server.isRunning { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if server.isRunning { kill(server.processIdentifier, SIGKILL) }
         }
         server = nil
 
-        // A stale sidecar from a previous app run can still hold the port
-        // without answering health checks; take the next free port instead.
+        // A sidecar that survived the reap — or another process — may still
+        // hold the port without answering health checks; take the next free one.
         port = Self.freePort(startingAt: port)
         Log.note("starting speech engine on port \(port)")
 
@@ -406,6 +488,7 @@ final class SpeechEngine {
         audio.stop()
         socket?.close()
         socket = nil
+        streamOwner = nil
         state = .failed(message)
     }
 }

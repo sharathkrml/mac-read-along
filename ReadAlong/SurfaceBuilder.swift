@@ -18,35 +18,116 @@ struct Surface: Equatable, Sendable {
     let rects: [[CGRect]]
 }
 
+/// Whether the tracked window reads as a light or dark surface. The overlay
+/// picks highlight colors that keep the underlying text legible either way.
+enum SurfaceTone: Equatable, Sendable {
+    case light
+    case dark
+
+    static func classify(_ thumb: [UInt8]) -> SurfaceTone {
+        guard !thumb.isEmpty else { return .dark }
+        let mean = thumb.reduce(0) { $0 + Int($1) } / thumb.count
+        return mean > 150 ? .light : .dark
+    }
+}
+
 /// Pure turn of OCR lines into a trackable surface, testable without a screen.
 enum SurfaceBuilder {
     static func build(lines: [OCRLine]) -> Surface {
-        let ordered = orderLines(
-            lines.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        )
-        guard !ordered.isEmpty else { return Surface(sentences: [], rects: []) }
+        // A window is often several columns (sidebar, document, terminal).
+        // Sentences must not run across a gutter: joining columns made speech
+        // match one giant sentence with rectangles all over the window.
+        let blocks = columnBlocks(lines)
+        guard !blocks.isEmpty else { return Surface(sentences: [], rects: []) }
 
-        var text = ""
-        var spans: [(range: NSRange, rect: CGRect)] = []
-        for line in ordered {
-            // Space, not newline: NLTokenizer would end the sentence at a line
-            // break, but wrapped sentences must stay one trackable unit.
-            if !text.isEmpty { text += " " }
-            let location = (text as NSString).length
-            text += line.text
-            spans.append((
-                NSRange(location: location, length: (line.text as NSString).length),
-                line.rect
-            ))
-        }
+        var sentences: [Sentence] = []
+        var rects: [[CGRect]] = []
 
-        let sentences = SentenceIndex.sentences(in: text)
-        let rects = sentences.map { sentence in
-            spans.compactMap { span in
-                NSIntersectionRange(sentence.range, span.range).length > 0 ? span.rect : nil
+        for block in blocks {
+            let ordered = orderLines(block)
+            let blockLeft = ordered.map(\.rect.minX).min() ?? 0
+            let wrapEdge = ordered.map(\.rect.maxX).max() ?? 0
+
+            var text = ""
+            var spans: [(range: NSRange, rect: CGRect)] = []
+            var previous: OCRLine?
+            for line in ordered {
+                // Space joins a wrapped line into the same sentence; newline
+                // starts a new one. UI text has no sentence punctuation, so
+                // joining every line made one giant sentence highlighted all
+                // over the window (nav labels, poll rows, counts, next post).
+                if let previous {
+                    text += continuesSentence(previous, line, wrapEdge: wrapEdge, blockLeft: blockLeft)
+                        ? " " : "\n"
+                }
+                let location = (text as NSString).length
+                text += line.text
+                spans.append((
+                    NSRange(location: location, length: (line.text as NSString).length),
+                    line.rect
+                ))
+                previous = line
+            }
+
+            for sentence in SentenceIndex.sentences(in: text) {
+                sentences.append(sentence)
+                rects.append(spans.compactMap { span in
+                    NSIntersectionRange(sentence.range, span.range).length > 0 ? span.rect : nil
+                })
             }
         }
         return Surface(sentences: sentences, rects: rects)
+    }
+
+    /// Whether `line` looks like the next wrapped line of `previous`'s
+    /// paragraph rather than a new item: tight spacing, the previous line runs
+    /// to the column's right edge, and the two share horizontal space. A stray
+    /// bridge line that made several columns one block can only join lines in
+    /// its own column, never text from the far side of the window.
+    static func continuesSentence(
+        _ previous: OCRLine,
+        _ line: OCRLine,
+        wrapEdge: CGFloat,
+        blockLeft: CGFloat
+    ) -> Bool {
+        let gap = previous.rect.minY - line.rect.maxY
+        let tight = gap <= max(previous.rect.height, line.rect.height) * 0.6
+        let wrapped = previous.rect.maxX >= wrapEdge - (wrapEdge - blockLeft) * 0.25
+        let overlap = min(previous.rect.maxX, line.rect.maxX)
+            - max(previous.rect.minX, line.rect.minX)
+        let sameColumn = overlap >= min(previous.rect.width, line.rect.width) * 0.5
+        return tight && wrapped && sameColumn
+    }
+
+    /// Groups lines whose horizontal spans overlap into reading blocks. Columns
+    /// sit side by side without overlapping, so each becomes its own block.
+    static func columnBlocks(_ lines: [OCRLine]) -> [[OCRLine]] {
+        var blocks: [(minX: CGFloat, maxX: CGFloat, lines: [OCRLine])] = []
+
+        for line in lines where !line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            blocks.append((line.rect.minX, line.rect.maxX, [line]))
+        }
+        guard !blocks.isEmpty else { return [] }
+
+        // Merge overlapping spans until the set is stable; OCR lines bridge
+        // adjacent columns now and then, and those must join one block.
+        var didMerge = true
+        while didMerge {
+            didMerge = false
+            outer: for i in blocks.indices {
+                for j in blocks.indices where j > i {
+                    if blocks[i].maxX > blocks[j].minX && blocks[j].maxX > blocks[i].minX {
+                        blocks[i].lines += blocks[j].lines
+                        blocks[i].minX = min(blocks[i].minX, blocks[j].minX)
+                        blocks[i].maxX = max(blocks[i].maxX, blocks[j].maxX)
+                        blocks.remove(at: j)
+                        didMerge = true
+                        break outer
+                    }
+                }
+            }
+        }
+        return blocks.sorted { $0.minX < $1.minX }.map(\.lines)
     }
 
     /// Reading order: rows top to bottom, lines within a row left to right.

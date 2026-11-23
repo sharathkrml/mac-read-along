@@ -1,12 +1,14 @@
 import AppKit
 import AVFoundation
 
-/// The gated first-run experience: permissions with live status, speech
-/// engine setup with progress, and the how-to. Shown again whenever a
-/// required permission is missing at launch.
+/// The gated first-run experience: permissions with live status, an engine
+/// that loads itself, and a live microphone test with waveform and transcript.
+/// Shown again whenever a required permission is missing at launch.
 @MainActor
 final class OnboardingController: NSObject, NSWindowDelegate {
     private let engine: SpeechEngine
+    /// Called when the user leaves the launcher to pick a window to read.
+    var onStartReading: (() -> Void)?
     private var window: NSWindow?
     private var micRow: PermissionRow?
     private var screenRow: PermissionRow?
@@ -16,8 +18,17 @@ final class OnboardingController: NSObject, NSWindowDelegate {
     private var engineActivity: ActivityBars?
     private var engineButton: PillButton?
     private var continueButton: PillButton?
+    private var waveform: WaveformView?
+    private var transcriptLabel: NSTextField?
+    private var testStatusLabel: NSTextField?
     private var cards: [NSView] = []
     private var enginePrepared = false
+    private var preparing = false
+    private var testStarting = false
+    /// True while this window is open; the mic test must not outlive it.
+    private var testEnabled = false
+
+    private static let transcriptPlaceholder = "Your words appear here as you speak."
 
     init(engine: SpeechEngine) {
         self.engine = engine
@@ -25,7 +36,9 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
         engine.addObserver(
             id: ObjectIdentifier(self),
-            onState: { [weak self] state in self?.handleEngineState(state) }
+            onState: { [weak self] state in self?.handleEngineState(state) },
+            onTranscript: { [weak self] update in self?.handleTranscript(update) },
+            onLevel: { [weak self] level in self?.handleLevel(level) }
         )
     }
 
@@ -33,12 +46,20 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         if window == nil {
             window = makeWindow()
         }
+        testEnabled = true
         window?.ensureOnVisibleScreen()
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
         refreshPermissions()
+        startEngine()
         animateCards()
+    }
+
+    /// Leaves the front door open behind the picker when a session starts.
+    func hide() {
+        endTest()
+        window?.orderOut(nil)
     }
 
     // MARK: - Permission rows
@@ -50,6 +71,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         )
         screenRow?.update(granted: Permissions.screenRecordingGranted(), denied: true)
         accessibilityRow?.update(granted: Permissions.accessibilityGranted(), denied: false)
+        updateStartButton()
     }
 
     @objc private func grantMicrophone() {
@@ -57,6 +79,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             Task { @MainActor in
                 _ = await AVCaptureDevice.requestAccess(for: .audio)
                 self.refreshPermissions()
+                self.startTestIfPossible()
             }
         } else {
             Permissions.openMicrophonePane()
@@ -71,66 +94,213 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         Permissions.promptForAccessibility()
     }
 
-    // MARK: - Engine setup
+    // MARK: - Engine setup and mic test
 
-    @objc private func startEngineSetup() {
+    /// The model loads itself as soon as the window appears; nothing to click.
+    private func startEngine() {
+        if case .listening = engine.state {
+            enginePrepared = true
+            startTestIfPossible()
+            return
+        }
+        prepareEngine()
+    }
+
+    private func prepareEngine() {
+        guard !preparing, engine.state != .listening else { return }
+        if case .starting = engine.state { return }
+        preparing = true
         engineButton?.isEnabled = false
         engineButton?.title = "Setting up…"
-        engineStatusLabel?.stringValue = "Starting"
-        engineDetailLabel?.stringValue = "Installing the local speech engine."
+        engineStatusLabel?.stringValue = "Loading"
+        engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
         engineActivity?.isActive = true
+        testStatusLabel?.attributedStringValue = ReaderTheme.micro("STARTING THE ENGINE", size: 9)
+        updateStartButton()
+
         Task { @MainActor in
             do {
                 try await self.engine.prepare()
                 self.enginePrepared = true
+                // prepare() can leave the engine in a starting state; clear it
+                // so the mic test can open a fresh stream.
+                self.engine.stop()
+                self.preparing = false
                 self.engineStatusLabel?.stringValue = "Ready"
                 self.engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
                 self.engineButton?.title = "Ready"
                 self.engineButton?.isEnabled = false
                 self.engineActivity?.isActive = false
+                self.updateStartButton()
+                self.startTestIfPossible()
             } catch {
+                self.engine.stop()
+                self.preparing = false
                 self.engineStatusLabel?.stringValue = "Error"
                 self.engineDetailLabel?.stringValue = error.localizedDescription
                 self.engineButton?.title = "Retry"
                 self.engineButton?.isEnabled = true
                 self.engineActivity?.isActive = false
+                self.updateStartButton()
+                self.testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                    "ENGINE UNAVAILABLE",
+                    color: ReaderTheme.danger,
+                    size: 9
+                )
             }
         }
+    }
+
+    /// Opens the mic for the test only while this window is up, and only after
+    /// the model is ready and the microphone has been granted.
+    private func startTestIfPossible() {
+        guard testEnabled, !preparing, window?.isVisible == true, enginePrepared else { return }
+        if engine.state == .listening {
+            testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                "LISTENING · SAY ANYTHING",
+                color: ReaderTheme.amber,
+                size: 9
+            )
+            return
+        }
+        guard !testStarting else { return }
+        guard Permissions.microphoneGranted() else {
+            testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                "GRANT THE MICROPHONE TO TEST",
+                color: ReaderTheme.textSecondary,
+                size: 9
+            )
+            return
+        }
+
+        testStarting = true
+        testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+            "STARTING THE MICROPHONE",
+            color: ReaderTheme.amber,
+            size: 9
+        )
+        Task { @MainActor in
+            defer { self.testStarting = false }
+            do {
+                try await self.engine.start(owner: ObjectIdentifier(self))
+            } catch {
+                self.testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                    "MICROPHONE UNAVAILABLE",
+                    color: ReaderTheme.danger,
+                    size: 9
+                )
+                self.transcriptLabel?.stringValue = error.localizedDescription
+                self.transcriptLabel?.textColor = ReaderTheme.danger
+            }
+        }
+    }
+
+    private func handleTranscript(_ update: TranscriptUpdate) {
+        guard testEnabled, window?.isVisible == true else { return }
+        transcriptLabel?.stringValue = update.text
+        transcriptLabel?.textColor = update.isFinal ? ReaderTheme.textPrimary : ReaderTheme.textSecondary
+    }
+
+    private func handleLevel(_ level: Float) {
+        guard testEnabled, window?.isVisible == true else { return }
+        waveform?.add(level)
     }
 
     private func handleEngineState(_ state: SpeechEngineState) {
         guard window?.isVisible == true else { return }
         switch state {
         case .starting(let message):
-            engineStatusLabel?.stringValue = "Starting"
+            engineStatusLabel?.stringValue = "Loading"
             engineDetailLabel?.stringValue = message
             engineActivity?.isActive = true
+            if !enginePrepared {
+                testStatusLabel?.attributedStringValue = ReaderTheme.micro("STARTING THE ENGINE", size: 9)
+            }
         case .listening:
+            enginePrepared = true
             engineStatusLabel?.stringValue = "Ready"
-            engineDetailLabel?.stringValue = "Engine running"
+            engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
             engineActivity?.isActive = false
             engineButton?.title = "Ready"
             engineButton?.isEnabled = false
+            testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                "LISTENING · SAY ANYTHING",
+                color: ReaderTheme.amber,
+                size: 9
+            )
         case .failed(let message):
-            engineStatusLabel?.stringValue = "Error"
-            engineDetailLabel?.stringValue = message
             engineActivity?.isActive = false
-            engineButton?.title = "Retry"
-            engineButton?.isEnabled = true
+            waveform?.reset()
+            if enginePrepared {
+                // The model is fine; only this test stream stopped.
+                testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                    "VOICE TEST STOPPED",
+                    color: ReaderTheme.danger,
+                    size: 9
+                )
+                transcriptLabel?.stringValue = message
+                transcriptLabel?.textColor = ReaderTheme.danger
+                engineButton?.title = "Retry"
+                engineButton?.isEnabled = true
+            } else {
+                engineStatusLabel?.stringValue = "Error"
+                engineDetailLabel?.stringValue = message
+                engineButton?.title = "Retry"
+                engineButton?.isEnabled = true
+                testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                    "ENGINE UNAVAILABLE",
+                    color: ReaderTheme.danger,
+                    size: 9
+                )
+            }
         case .idle:
+            waveform?.reset()
+            testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                enginePrepared ? "MICROPHONE OFF" : "WAITING FOR THE ENGINE",
+                color: ReaderTheme.textSecondary,
+                size: 9
+            )
             if enginePrepared {
                 engineStatusLabel?.stringValue = "Ready"
                 engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
-            } else {
-                engineStatusLabel?.stringValue = "Off"
-                engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+                startTestIfPossible()
             }
+        }
+        updateStartButton()
+    }
+
+    /// The session needs the model, the microphone, and screen recording.
+    private func updateStartButton() {
+        let permitted = Permissions.microphoneGranted() && Permissions.screenRecordingGranted()
+        continueButton?.isEnabled = enginePrepared && permitted
+        if !permitted {
+            continueButton?.title = "Grant permissions"
+        } else if !enginePrepared {
+            continueButton?.title = "Preparing…"
+        } else {
+            continueButton?.title = "Start reading"
         }
     }
 
-    @objc private func finish() {
-        AppSettings.standard.onboardingCompleted = true
-        window?.orderOut(nil)
+    /// Stops the test stream if this window was the one that opened it; a
+    /// read-along session keeps its own stream running.
+    private func endTest() {
+        testEnabled = false
+        if engine.streamOwner == ObjectIdentifier(self) {
+            engine.stop()
+        }
+        waveform?.reset()
+        transcriptLabel?.stringValue = Self.transcriptPlaceholder
+        transcriptLabel?.textColor = ReaderTheme.textTertiary
+        testStatusLabel?.attributedStringValue = ReaderTheme.micro("MICROPHONE OFF", size: 9)
+    }
+
+    @objc private func startReading() {
+        guard enginePrepared,
+              Permissions.microphoneGranted(),
+              Permissions.screenRecordingGranted() else { return }
+        endTest()
+        onStartReading?()
     }
 
     // MARK: - Window
@@ -164,7 +334,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         let kicker = Widget.microLabel("READ ALONG · SETUP", color: ReaderTheme.amber)
         let title = Widget.displayLabel("Settle in.", size: 44, weight: .thin)
         let subtitle = Widget.bodyLabel(
-            "A quiet reading surface that follows your voice. Grant two permissions, set up the local speech engine, and read.",
+            "A quiet reading surface that follows your voice. Grant two permissions, then say a few words to test the local engine.",
             size: 13
         )
         let privacy = Widget.capsuleLabel("LOCAL · PRIVATE", tint: ReaderTheme.textSecondary)
@@ -207,14 +377,16 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         // Engine widget
         let engineCard = Widget.card()
         let engineKicker = Widget.microLabel("02 · SPEECH ENGINE")
-        let engineTitle = Widget.displayLabel("Off", size: 32, weight: .light)
+        let engineTitle = Widget.displayLabel("Loading", size: 32, weight: .light)
         let engineDetail = Widget.bodyLabel(
             "\(AppSettings.standard.model.uppercased()) · ENGLISH",
             size: 11
         )
         let activity = ActivityBars()
-        let engineButton = PillButton("Set Up Engine", kind: .primary)
-        engineButton.onPress = { [weak self] in self?.startEngineSetup() }
+        activity.isActive = true
+        let engineButton = PillButton("Setting up…", kind: .primary)
+        engineButton.isEnabled = false
+        engineButton.onPress = { [weak self] in self?.prepareEngine() }
         engineButton.font = ReaderTheme.interfaceFont(size: 12, weight: .semibold)
 
         engineStatusLabel = engineTitle
@@ -228,42 +400,42 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         engineCard.addSubview(activity)
         engineCard.addSubview(engineButton)
 
-        // How-to widget
-        let howTo = Widget.card()
-        let howToKicker = Widget.microLabel("03 · HOW TO READ")
-        let hotkey = HotkeyManager.displayString(
-            keyCode: AppSettings.standard.hotkeyCode,
-            modifiers: AppSettings.standard.hotkeyModifiers
-        )
-        let keys = KeycapsView(keys: hotkey)
-        let howToBody = Widget.bodyLabel(
-            "Press the shortcut, click the window you are reading, and read aloud.",
-            size: 12
-        )
-        let currentSample = highlightSample(
-            "The sentence under your voice.",
-            fill: ReaderTheme.readingFill,
-            ink: ReaderTheme.readingInk
-        )
-        let nextSample = highlightSample(
-            "The next one waits here.",
-            fill: ReaderTheme.nextFill,
-            ink: ReaderTheme.textSecondary
-        )
+        // Mic test widget
+        let micTest = Widget.card()
+        let testKicker = Widget.microLabel("03 · TRY YOUR VOICE")
+        let waveform = WaveformView()
+        let transcript = NSTextField(wrappingLabelWithString: Self.transcriptPlaceholder)
+        transcript.translatesAutoresizingMaskIntoConstraints = false
+        transcript.font = ReaderTheme.interfaceFont(size: 14)
+        transcript.textColor = ReaderTheme.textTertiary
+        transcript.maximumNumberOfLines = 2
+        transcript.lineBreakMode = .byTruncatingTail
+        let testStatus = Widget.microLabel("WAITING FOR THE ENGINE", size: 9)
 
-        howTo.addSubview(howToKicker)
-        howTo.addSubview(keys)
-        howTo.addSubview(howToBody)
-        howTo.addSubview(currentSample)
-        howTo.addSubview(nextSample)
+        self.waveform = waveform
+        transcriptLabel = transcript
+        testStatusLabel = testStatus
+
+        micTest.addSubview(testKicker)
+        micTest.addSubview(waveform)
+        micTest.addSubview(transcript)
+        micTest.addSubview(testStatus)
 
         // Ready widget
         let ready = Widget.card()
         let readyKicker = Widget.microLabel("READY WHEN YOU ARE")
         let readyTitle = Widget.displayLabel("Go.", size: 40, weight: .thin)
-        let readyHint = Widget.bodyLabel("Permissions and the model can be changed later in Settings.", size: 11)
+        let hotkey = HotkeyManager.displayString(
+            keyCode: AppSettings.standard.hotkeyCode,
+            modifiers: AppSettings.standard.hotkeyModifiers
+        )
+        let readyHint = Widget.bodyLabel(
+            "Start reading, then click the browser or PDF window you want to follow. \(hotkey) does the same from anywhere.",
+            size: 11
+        )
         let startButton = PillButton("Start reading", kind: .primary)
-        startButton.onPress = { [weak self] in self?.finish() }
+        startButton.isEnabled = false
+        startButton.onPress = { [weak self] in self?.startReading() }
         continueButton = startButton
 
         ready.addSubview(readyKicker)
@@ -273,9 +445,9 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
         content.addSubview(permissions)
         content.addSubview(engineCard)
-        content.addSubview(howTo)
+        content.addSubview(micTest)
         content.addSubview(ready)
-        cards = [permissions, engineCard, howTo, ready]
+        cards = [permissions, engineCard, micTest, ready]
 
         NSLayoutConstraint.activate([
             backdrop.topAnchor.constraint(equalTo: content.topAnchor),
@@ -306,14 +478,15 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             engineCard.heightAnchor.constraint(equalTo: permissions.heightAnchor),
             engineCard.widthAnchor.constraint(equalTo: permissions.widthAnchor),
 
-            howTo.leadingAnchor.constraint(equalTo: permissions.leadingAnchor),
-            howTo.topAnchor.constraint(equalTo: permissions.bottomAnchor, constant: 16),
-            howTo.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
+            micTest.leadingAnchor.constraint(equalTo: permissions.leadingAnchor),
+            micTest.widthAnchor.constraint(equalTo: permissions.widthAnchor),
+            micTest.topAnchor.constraint(equalTo: permissions.bottomAnchor, constant: 16),
+            micTest.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
 
-            ready.leadingAnchor.constraint(equalTo: howTo.trailingAnchor, constant: 16),
+            ready.leadingAnchor.constraint(equalTo: micTest.trailingAnchor, constant: 16),
             ready.trailingAnchor.constraint(equalTo: engineCard.trailingAnchor),
-            ready.topAnchor.constraint(equalTo: howTo.topAnchor),
-            ready.bottomAnchor.constraint(equalTo: howTo.bottomAnchor),
+            ready.topAnchor.constraint(equalTo: micTest.topAnchor),
+            ready.bottomAnchor.constraint(equalTo: micTest.bottomAnchor),
 
             // Permissions content
             permissionKicker.leadingAnchor.constraint(equalTo: permissions.leadingAnchor, constant: 20),
@@ -356,26 +529,23 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             engineButton.widthAnchor.constraint(equalToConstant: 150),
             engineButton.heightAnchor.constraint(equalToConstant: 34),
 
-            // How-to content
-            howToKicker.leadingAnchor.constraint(equalTo: howTo.leadingAnchor, constant: 20),
-            howToKicker.topAnchor.constraint(equalTo: howTo.topAnchor, constant: 20),
+            // Mic test content
+            testKicker.leadingAnchor.constraint(equalTo: micTest.leadingAnchor, constant: 20),
+            testKicker.topAnchor.constraint(equalTo: micTest.topAnchor, constant: 20),
 
-            keys.leadingAnchor.constraint(equalTo: howToKicker.leadingAnchor),
-            keys.topAnchor.constraint(equalTo: howToKicker.bottomAnchor, constant: 12),
+            waveform.leadingAnchor.constraint(equalTo: testKicker.leadingAnchor),
+            waveform.trailingAnchor.constraint(equalTo: micTest.trailingAnchor, constant: -20),
+            waveform.topAnchor.constraint(equalTo: testKicker.bottomAnchor, constant: 12),
+            waveform.heightAnchor.constraint(equalToConstant: 58),
 
-            howToBody.leadingAnchor.constraint(equalTo: howToKicker.leadingAnchor),
-            howToBody.topAnchor.constraint(equalTo: keys.bottomAnchor, constant: 10),
-            howToBody.trailingAnchor.constraint(equalTo: howTo.trailingAnchor, constant: -20),
+            transcript.leadingAnchor.constraint(equalTo: testKicker.leadingAnchor),
+            transcript.trailingAnchor.constraint(equalTo: micTest.trailingAnchor, constant: -20),
+            transcript.topAnchor.constraint(equalTo: waveform.bottomAnchor, constant: 10),
+            transcript.heightAnchor.constraint(equalToConstant: 40),
 
-            currentSample.leadingAnchor.constraint(equalTo: howToKicker.leadingAnchor),
-            currentSample.trailingAnchor.constraint(equalTo: howTo.trailingAnchor, constant: -20),
-            currentSample.topAnchor.constraint(equalTo: howToBody.bottomAnchor, constant: 12),
-            currentSample.heightAnchor.constraint(equalToConstant: 28),
-
-            nextSample.leadingAnchor.constraint(equalTo: currentSample.leadingAnchor),
-            nextSample.trailingAnchor.constraint(equalTo: currentSample.trailingAnchor),
-            nextSample.topAnchor.constraint(equalTo: currentSample.bottomAnchor, constant: 6),
-            nextSample.heightAnchor.constraint(equalToConstant: 28),
+            testStatus.leadingAnchor.constraint(equalTo: testKicker.leadingAnchor),
+            testStatus.bottomAnchor.constraint(equalTo: micTest.bottomAnchor, constant: -16),
+            testStatus.trailingAnchor.constraint(lessThanOrEqualTo: micTest.trailingAnchor, constant: -20),
 
             // Ready content
             readyKicker.leadingAnchor.constraint(equalTo: ready.leadingAnchor, constant: 20),
@@ -390,31 +560,11 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
             startButton.trailingAnchor.constraint(equalTo: ready.trailingAnchor, constant: -20),
             startButton.bottomAnchor.constraint(equalTo: ready.bottomAnchor, constant: -20),
-            startButton.widthAnchor.constraint(equalToConstant: 150),
+            startButton.widthAnchor.constraint(equalToConstant: 170),
             startButton.heightAnchor.constraint(equalToConstant: 38),
         ])
 
         return window
-    }
-
-    private func highlightSample(_ text: String, fill: NSColor, ink: NSColor) -> NSView {
-        let sample = NSView()
-        sample.translatesAutoresizingMaskIntoConstraints = false
-        sample.wantsLayer = true
-        sample.layer?.backgroundColor = fill.cgColor
-        sample.layer?.cornerRadius = 8
-
-        let label = NSTextField(labelWithString: text)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.font = ReaderTheme.interfaceFont(size: 12)
-        label.textColor = ink
-        sample.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: sample.leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: sample.trailingAnchor, constant: -10),
-            label.centerYAnchor.constraint(equalTo: sample.centerYAnchor),
-        ])
-        return sample
     }
 
     private func animateCards() {
@@ -435,6 +585,11 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         // Granting in System Settings only takes effect after relaunch for
         // screen recording, but refreshing on focus keeps statuses honest.
         refreshPermissions()
+        startTestIfPossible()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        endTest()
     }
 }
 

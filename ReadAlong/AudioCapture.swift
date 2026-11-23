@@ -21,6 +21,73 @@ enum MicrophoneError: LocalizedError {
     }
 }
 
+/// Maps 16 kHz float32 PCM to a 0…1 level for the onboarding waveform.
+enum AudioLevel {
+    static func rms(_ data: Data) -> Float {
+        data.withUnsafeBytes { raw in
+            let samples = raw.bindMemory(to: Float.self)
+            guard !samples.isEmpty else { return 0 }
+            var sum: Float = 0
+            for sample in samples {
+                sum += sample * sample
+            }
+            return (sum / Float(samples.count)).squareRoot()
+        }
+    }
+
+    /// RMS from 0…1 to 0…1 on a dBFS scale, so quiet speech still moves the bars.
+    static func normalized(rms: Float) -> Float {
+        guard rms > 0 else { return 0 }
+        let decibels = 20 * log10(rms)
+        return min(max((decibels + 55) / 55, 0), 1)
+    }
+}
+
+/// What the microphone picker lists, and the device capture resolves to. A
+/// saved device that is no longer connected falls back to the system default.
+enum MicrophoneCatalog {
+    /// One picker row: `id` is the device's unique ID, empty for the system
+    /// default.
+    struct Choice {
+        let id: String
+        let title: String
+    }
+
+    static func devices() -> [AVCaptureDevice] {
+        AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices
+    }
+
+    /// Picker rows shared by Settings and the floating card. The system-default
+    /// row names the device it currently resolves to so the choice is visible
+    /// without opening the menu.
+    static func choices(preferredID: String) -> [Choice] {
+        let connected = devices()
+        let defaultName = AVCaptureDevice.default(for: .audio)?.localizedName
+            ?? connected.first?.localizedName
+        var choices = [Choice(
+            id: "",
+            title: defaultName.map { "System default · \($0)" } ?? "System default"
+        )]
+        choices += connected.map { Choice(id: $0.uniqueID, title: $0.localizedName) }
+        if !preferredID.isEmpty, !choices.contains(where: { $0.id == preferredID }) {
+            choices.append(Choice(id: preferredID, title: "Saved microphone (not connected)"))
+        }
+        return choices
+    }
+
+    static func resolve(preferredID: String) -> AVCaptureDevice? {
+        if !preferredID.isEmpty,
+           let saved = devices().first(where: { $0.uniqueID == preferredID }) {
+            return saved
+        }
+        return AVCaptureDevice.default(for: .audio) ?? devices().first
+    }
+}
+
 /// Captures the microphone as 16 kHz mono float32 PCM and hands each buffer to
 /// the speech engine. Uses AVCaptureAudioDataOutput rather than AVAudioEngine
 /// taps because installTap can throw an uncatchable ObjC exception when no
@@ -31,6 +98,8 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     private var failureReported = false
     private var pcmHandler: (@Sendable (Data) -> Void)?
     private var failureHandler: (@Sendable (String) -> Void)?
+    private var levelHandler: (@Sendable (Float) -> Void)?
+    private var lastLevelAt: TimeInterval = 0
     private var session: AVCaptureSession?
     private var output: AVCaptureAudioDataOutput?
     private var runtimeObserver: NSObjectProtocol?
@@ -41,8 +110,10 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
     }
 
     func start(
+        deviceID: String,
         onPCM: @escaping @Sendable (Data) -> Void,
-        onFailure: @escaping @Sendable (String) -> Void
+        onFailure: @escaping @Sendable (String) -> Void,
+        onLevel: (@Sendable (Float) -> Void)? = nil
     ) async throws {
         guard !isRunning else { return }
 
@@ -57,7 +128,7 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
             throw MicrophoneError.notAuthorized
         }
 
-        guard let device = Self.inputDevice() else {
+        guard let device = MicrophoneCatalog.resolve(preferredID: deviceID) else {
             throw MicrophoneError.noInputDevice
         }
 
@@ -94,6 +165,8 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         lock.withLock {
             pcmHandler = onPCM
             failureHandler = onFailure
+            levelHandler = onLevel
+            lastLevelAt = 0
             failureReported = false
             running = true
         }
@@ -118,6 +191,7 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
             running = false
             pcmHandler = nil
             failureHandler = nil
+            levelHandler = nil
             return was
         }
         guard wasRunning else { return }
@@ -131,17 +205,6 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
         output = nil
     }
 
-    private static func inputDevice() -> AVCaptureDevice? {
-        if let device = AVCaptureDevice.default(for: .audio) {
-            return device
-        }
-        return AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone],
-            mediaType: .audio,
-            position: .unspecified
-        ).devices.first
-    }
-
     private func reportFailure(_ message: String) {
         let handler: (@Sendable (String) -> Void)? = lock.withLock {
             guard running, !failureReported else { return nil }
@@ -149,6 +212,18 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
             return failureHandler
         }
         handler?(message)
+    }
+
+    /// Throttled to ~30 Hz on the capture queue; the waveform repaints per update.
+    private func reportLevel(_ data: Data) {
+        let handler: (@Sendable (Float) -> Void)? = lock.withLock {
+            guard running, let levelHandler else { return nil }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - lastLevelAt >= 0.033 else { return nil }
+            lastLevelAt = now
+            return levelHandler
+        }
+        handler?(AudioLevel.normalized(rms: AudioLevel.rms(data)))
     }
 
     func captureOutput(
@@ -171,6 +246,8 @@ final class AudioCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate
             dataPointerOut: &pointer
         )
         guard status == noErr, let pointer, length > 0 else { return }
-        handler(Data(bytes: pointer, count: length))
+        let data = Data(bytes: pointer, count: length)
+        handler(data)
+        reportLevel(data)
     }
 }

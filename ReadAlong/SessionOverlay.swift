@@ -20,6 +20,7 @@ final class SessionOverlay {
 
     private(set) var highlights: HighlightRects?
     private(set) var notice: String?
+    private(set) var tone: SurfaceTone = .dark
 
     func begin(window: WindowInfo, onTargetLost: @escaping () -> Void) {
         guard !isActive else { return }
@@ -85,18 +86,45 @@ final class SessionOverlay {
         redraw()
     }
 
+    /// The captured window's brightness changed; repaint with the matching
+    /// highlight palette.
+    func setTone(_ tone: SurfaceTone) {
+        guard tone != self.tone else { return }
+        self.tone = tone
+        redraw()
+    }
+
     private func redraw() {
         for window in windows {
-            (window.contentView as? OverlayView)?.highlights = highlights
-            (window.contentView as? OverlayView)?.notice = notice
-            window.contentView?.needsDisplay = true
+            guard let view = window.contentView as? OverlayView else { continue }
+            view.highlights = highlights
+            view.notice = notice
+            view.tone = tone
+            view.needsDisplay = true
         }
     }
 
     private func refresh() {
         guard isActive, let target else { return }
 
-        guard let current = WindowInfo.current(windowID: target.windowID) else {
+        // One window-list query covers both moving and hiding: the target is
+        // in the on-screen list exactly when its window is visible. Repaint
+        // only when it moved, so a still window costs no redraws at all.
+        if let current = WindowInfo.onScreenWindows().first(where: { $0.windowID == target.windowID }) {
+            if hiddenForOffScreen {
+                windows.forEach { $0.orderFrontRegardless() }
+                hiddenForOffScreen = false
+            }
+            guard current.frame != target.frame else { return }
+            self.target = current
+            for window in windows {
+                (window.contentView as? OverlayView)?.targetFrame = current.frame
+            }
+            redraw()
+            return
+        }
+
+        guard WindowInfo.current(windowID: target.windowID) != nil else {
             Log.note("target window \(target.windowID) lost")
             let handler = onTargetLost
             end()
@@ -104,24 +132,10 @@ final class SessionOverlay {
             return
         }
 
-        if !WindowInfo.isOnScreen(windowID: target.windowID) {
-            if !hiddenForOffScreen {
-                windows.forEach { $0.orderOut(nil) }
-                hiddenForOffScreen = true
-            }
-            return
+        if !hiddenForOffScreen {
+            windows.forEach { $0.orderOut(nil) }
+            hiddenForOffScreen = true
         }
-
-        if hiddenForOffScreen {
-            windows.forEach { $0.orderFrontRegardless() }
-            hiddenForOffScreen = false
-        }
-
-        self.target = current
-        for window in windows {
-            (window.contentView as? OverlayView)?.targetFrame = current.frame
-        }
-        redraw()
     }
 }
 
@@ -135,6 +149,7 @@ final class OverlayView: NSView {
     var targetFrame: CGRect = .zero
     var highlights: HighlightRects?
     var notice: String?
+    var tone: SurfaceTone = .dark
 
     override func draw(_ dirtyRect: NSRect) {
         guard targetFrame.width > 0, targetFrame.height > 0 else { return }
@@ -148,11 +163,10 @@ final class OverlayView: NSView {
             drawHighlights(highlights, in: local)
         }
 
+        // No full-window wash: tinting a light PDF crushes the text contrast.
         let path = NSBezierPath(roundedRect: local, xRadius: 10, yRadius: 10)
-        NSColor.systemOrange.withAlphaComponent(0.08).setFill()
-        path.fill()
-        NSColor.systemOrange.withAlphaComponent(0.85).setStroke()
-        path.lineWidth = 2
+        NSColor.systemOrange.withAlphaComponent(0.45).setStroke()
+        path.lineWidth = 1.5
         path.stroke()
 
         if let notice, !notice.isEmpty {
@@ -163,14 +177,15 @@ final class OverlayView: NSView {
     /// Highlight rectangles arrive normalized to the target window (origin at
     /// its bottom-left, Vision's convention); scale them into screen space.
     private func drawHighlights(_ highlights: HighlightRects, in window: CGRect) {
+        let palette = HighlightPalette(tone: tone)
         for rect in highlights.next {
             drawHighlight(
                 rect: scaled(rect, to: window).offsetBy(
                     dx: -screenFrame.origin.x,
                     dy: -screenFrame.origin.y
                 ),
-                fill: NSColor.white.withAlphaComponent(0.14),
-                stroke: nil
+                fill: palette.nextFill,
+                underline: palette.nextUnderline
             )
         }
         for rect in highlights.current {
@@ -179,22 +194,29 @@ final class OverlayView: NSView {
                     dx: -screenFrame.origin.x,
                     dy: -screenFrame.origin.y
                 ),
-                fill: ReaderTheme.readingStroke.withAlphaComponent(0.32),
-                stroke: ReaderTheme.readingStroke.withAlphaComponent(0.95)
+                fill: palette.currentFill,
+                underline: palette.currentUnderline
             )
         }
     }
 
-    private func drawHighlight(rect: CGRect, fill: NSColor, stroke: NSColor?) {
+    /// A low-alpha wash plus a bottom rule: the sentence reads as highlighted
+    /// while every glyph keeps its own contrast, on white paper or dark UI.
+    private func drawHighlight(rect: CGRect, fill: NSColor, underline: NSColor) {
         let radius = min(4, rect.height / 2)
         let path = NSBezierPath(roundedRect: rect.insetBy(dx: -1, dy: -1), xRadius: radius, yRadius: radius)
         fill.setFill()
         path.fill()
-        if let stroke {
-            stroke.setStroke()
-            path.lineWidth = 1.5
-            path.stroke()
-        }
+
+        let thickness = min(2.5, max(1.5, rect.height * 0.08))
+        let rule = CGRect(
+            x: rect.minX - 1,
+            y: rect.minY - 1,
+            width: rect.width + 2,
+            height: thickness
+        )
+        underline.setFill()
+        NSBezierPath(roundedRect: rule, xRadius: thickness / 2, yRadius: thickness / 2).fill()
     }
 
     private func scaled(_ rect: CGRect, to window: CGRect) -> CGRect {
@@ -222,5 +244,29 @@ final class OverlayView: NSView {
         NSColor.black.withAlphaComponent(0.75).setFill()
         NSBezierPath(roundedRect: chip, xRadius: chip.height / 2, yRadius: chip.height / 2).fill()
         string.draw(at: CGPoint(x: chip.minX + 14, y: chip.minY + 6), withAttributes: attributes)
+    }
+}
+
+/// Highlight colors chosen for the captured surface's brightness. Light pages
+/// get a whisper of amber so black text survives; dark surfaces can take more.
+private struct HighlightPalette {
+    let currentFill: NSColor
+    let currentUnderline: NSColor
+    let nextFill: NSColor
+    let nextUnderline: NSColor
+
+    init(tone: SurfaceTone) {
+        switch tone {
+        case .light:
+            currentFill = ReaderTheme.amber.withAlphaComponent(0.15)
+            currentUnderline = ReaderTheme.amber.withAlphaComponent(0.95)
+            nextFill = ReaderTheme.amber.withAlphaComponent(0.05)
+            nextUnderline = ReaderTheme.amber.withAlphaComponent(0.35)
+        case .dark:
+            currentFill = ReaderTheme.amber.withAlphaComponent(0.22)
+            currentUnderline = ReaderTheme.amber.withAlphaComponent(0.90)
+            nextFill = NSColor.white.withAlphaComponent(0.06)
+            nextUnderline = NSColor.white.withAlphaComponent(0.28)
+        }
     }
 }

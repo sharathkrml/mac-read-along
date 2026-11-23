@@ -3,10 +3,11 @@ import CoreGraphics
 import ScreenCaptureKit
 import Vision
 
-/// A captured frame of an external window: recognized lines plus a grayscale
-/// thumbnail used to detect visible change cheaply between captures.
+/// A captured frame of an external window: a grayscale thumbnail used to
+/// detect visible change cheaply, plus the recognized lines. `lines` is nil
+/// when the frame matched the previous thumbnail, so OCR was skipped.
 struct CapturedSurface: Sendable {
-    let lines: [OCRLine]
+    let lines: [OCRLine]?
     let thumb: [UInt8]
 }
 
@@ -30,7 +31,15 @@ enum WindowCapture {
     static let thumbWidth = 64
     static let thumbHeight = 36
 
-    nonisolated static func capture(windowID: CGWindowID) async throws -> CapturedSurface {
+    /// Captures the window and downscales it to a thumbnail. OCR runs only
+    /// when the thumbnail differs meaningfully from `previousThumb` (or
+    /// `force` is set): a still window costs a capture, not a Vision pass,
+    /// and recognition is the expensive part.
+    nonisolated static func capture(
+        windowID: CGWindowID,
+        previousThumb: [UInt8]?,
+        force: Bool
+    ) async throws -> CapturedSurface {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
             throw WindowCaptureError.windowNotFound
@@ -39,13 +48,26 @@ enum WindowCapture {
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let configuration = SCStreamConfiguration()
         configuration.showsCursor = false
+        // SCStreamConfiguration defaults to 1920x1080; a differently shaped
+        // window gets letterboxed, so normalized rects no longer map back onto
+        // the window and highlights drift left of their text. Match the
+        // window's pixel size exactly.
+        let scale = CGFloat(filter.pointPixelScale)
+        configuration.width = Int(filter.contentRect.width * scale)
+        configuration.height = Int(filter.contentRect.height * scale)
 
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
 
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    continuation.resume(returning: try recognize(image))
+                    let thumb = grayscaleThumb(image)
+                    let lines = FrameDifference.needsRecognition(
+                        previous: previousThumb,
+                        current: thumb,
+                        force: force
+                    ) ? try recognize(image) : nil
+                    continuation.resume(returning: CapturedSurface(lines: lines, thumb: thumb))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -56,7 +78,7 @@ enum WindowCapture {
     /// shortcut: one Vision observation treated as one visual line; column
     /// layouts that Vision merges into single observations will mis-group —
     /// revisit if multi-column reading surfaces matter.
-    private nonisolated static func recognize(_ image: CGImage) throws -> CapturedSurface {
+    private nonisolated static func recognize(_ image: CGImage) throws -> [OCRLine] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["en-US"]
@@ -70,7 +92,7 @@ enum WindowCapture {
             guard let candidate = observation.topCandidates(1).first else { continue }
             lines.append(OCRLine(text: candidate.string, rect: observation.boundingBox))
         }
-        return CapturedSurface(lines: lines, thumb: grayscaleThumb(image))
+        return lines
     }
 
     private nonisolated static func grayscaleThumb(_ image: CGImage) -> [UInt8] {
@@ -108,5 +130,11 @@ enum FrameDifference {
 
     static func isMeaningfulChange(_ score: Double) -> Bool {
         score > 2
+    }
+
+    /// Whether a captured frame needs a Vision pass: always when forced,
+    /// otherwise only when the pixels moved enough to be worth reading again.
+    static func needsRecognition(previous: [UInt8]?, current: [UInt8], force: Bool) -> Bool {
+        force || isMeaningfulChange(score(previous ?? [], current))
     }
 }

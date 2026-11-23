@@ -1,21 +1,25 @@
 import AppKit
+import Dispatch
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// One engine, one stream: the reader window and sessions share it.
+    /// Keeps the signal sources alive for the app's lifetime.
+    private var terminationSources: [DispatchSourceSignal] = []
+
+    /// One engine, one stream: the launcher and read-along sessions share it.
     private let engine = SpeechEngine()
     private let session: SessionController
-    private let reader: ReaderController
     private let settings = SettingsController()
     private let onboarding: OnboardingController
     private var hotkey: HotkeyManager?
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
     private var cardItem: NSMenuItem!
+    /// True while the launcher sent the user into the window picker.
+    private var launcherFlow = false
 
     override init() {
         session = SessionController(engine: engine)
-        reader = ReaderController(engine: engine)
         onboarding = OnboardingController(engine: engine)
         super.init()
 
@@ -26,6 +30,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.onCardVisibilityChange = { [weak self] in
             self?.session.syncStatusCardVisibility()
             self?.refreshMenu()
+        }
+        settings.onMicrophoneChange = { [weak self] in self?.engine.applyMicrophoneChange() }
+
+        onboarding.onStartReading = { [weak self] in
+            guard let self else { return }
+            self.launcherFlow = true
+            self.session.begin()
+        }
+
+        session.onStateChange = { [weak self] in self?.sessionStateChanged() }
+    }
+
+    private func sessionStateChanged() {
+        refreshMenu()
+        switch session.state {
+        case .picking:
+            onboarding.hide()
+        case .active:
+            launcherFlow = false
+        case .idle:
+            // Choosing was cancelled: bring the launcher back.
+            if launcherFlow {
+                launcherFlow = false
+                onboarding.show()
+            }
         }
     }
 
@@ -43,15 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.note("status item created: \(self.statusItem.button?.image != nil ? "with icon" : "no icon")")
 
         let menu = NSMenu()
-        let openItem = NSMenuItem(
-            title: "Open Reading…",
-            action: #selector(openReading),
-            keyEquivalent: "o"
-        )
-        openItem.target = self
-        menu.addItem(openItem)
-        menu.addItem(.separator())
-
         toggleItem = NSMenuItem(
             title: "Start Session",
             action: #selector(toggleSession),
@@ -97,22 +117,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItem.menu = menu
 
-        session.onStateChange = { [weak self] in self?.refreshMenu() }
-
         hotkey = HotkeyManager { [weak self] in self?.session.toggle() }
         let hotkeyStatus = hotkey?.register() ?? -1
         Log.note("hotkey register status: \(hotkeyStatus)")
 
-        // Permissions are re-checked on every launch: a revoked grant gets
-        // the onboarding fix path instead of a silently broken app.
-        let micGranted = Permissions.microphoneGranted()
-        let screenGranted = Permissions.screenRecordingGranted()
-        if !AppSettings.standard.onboardingCompleted || !micGranted || !screenGranted {
-            Log.note("onboarding shown: completed=\(AppSettings.standard.onboardingCompleted) mic=\(micGranted) screen=\(screenGranted)")
-            onboarding.show()
-        }
+        // The launcher is the app's front door: it shows permissions, warms the
+        // engine, and sends the reader straight into picking a window.
+        onboarding.show()
 
         installShortcutMonitor()
+        installTerminationHandlers()
+    }
+
+    /// `pkill` (and a logout) sends SIGTERM, which skips
+    /// `applicationWillTerminate` and leaves the speech engine running. Route
+    /// it through the normal termination path so `engine.shutdown()` runs.
+    private func installTerminationHandlers() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { NSApp.terminate(nil) }
+            source.resume()
+            terminationSources.append(source)
+        }
     }
 
     /// Standard app shortcuts while any Read Along window is frontmost.
@@ -122,9 +149,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch event.charactersIgnoringModifiers {
             case ",":
                 MainActor.assumeIsolated { self?.showSettings() }
-                return nil
-            case "o":
-                MainActor.assumeIsolated { self?.openReading() }
                 return nil
             case "w":
                 MainActor.assumeIsolated { NSApp.keyWindow?.performClose(nil) }
@@ -137,17 +161,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         session.end()
-        reader.shutdown()
+        engine.shutdown()
         hotkey?.unregister()
-    }
-
-    @objc private func openReading() {
-        reader.openDocumentPanel()
-    }
-
-    func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
-        reader.open(url: url)
     }
 
     @objc private func toggleSession() {

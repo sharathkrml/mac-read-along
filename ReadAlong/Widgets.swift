@@ -381,6 +381,79 @@ final class ActivityBars: NSView {
     }
 }
 
+// MARK: - Waveform
+
+/// Scrolling symmetric bars driven by live mic levels; flat while silent or
+/// stopped. Used by the launcher mic test and the session status card.
+@MainActor
+final class WaveformView: NSView {
+    private var levels: [CGFloat]
+
+    init(barCount: Int = 76) {
+        levels = Array(repeating: 0, count: barCount)
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("WaveformView is built in code")
+    }
+
+    func add(_ level: Float) {
+        levels.removeFirst()
+        levels.append(CGFloat(min(max(level, 0), 1)))
+        needsDisplay = true
+    }
+
+    func reset() {
+        levels = Array(repeating: 0, count: levels.count)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let count = levels.count
+        let gap: CGFloat = bounds.width < 160 ? 1 : 2
+        let barWidth = max(1, (bounds.width - CGFloat(count - 1) * gap) / CGFloat(count))
+        for (index, level) in levels.enumerated() {
+            let height = max(2, bounds.height * level)
+            let rect = CGRect(
+                x: CGFloat(index) * (barWidth + gap),
+                y: (bounds.height - height) / 2,
+                width: barWidth,
+                height: height
+            )
+            let path = NSBezierPath(roundedRect: rect, xRadius: barWidth / 2, yRadius: barWidth / 2)
+            ReaderTheme.amber.withAlphaComponent(0.16 + 0.74 * level).setFill()
+            path.fill()
+        }
+    }
+}
+
+// MARK: - Microphone picker
+
+extension NSPopUpButton {
+    /// Rows shared by the microphone pickers in Settings and the status card.
+    /// A saved device that is gone stays listed so it can be reselected.
+    func setMicrophoneChoices(preferredID: String) {
+        let choices = MicrophoneCatalog.choices(preferredID: preferredID)
+        // Rebuild only when the device list itself changed; state updates
+        // refresh the selection without resetting an open menu.
+        if itemArray.map(\.title) != choices.map(\.title) {
+            removeAllItems()
+            let mic = NSImage(systemSymbolName: "mic", accessibilityDescription: "Microphone")
+            for choice in choices {
+                addItem(withTitle: choice.title)
+                lastItem?.representedObject = choice.id
+                lastItem?.image = mic
+            }
+        }
+        selectItem(at: itemArray.firstIndex {
+            ($0.representedObject as? String) == preferredID
+        } ?? 0)
+    }
+}
+
 // MARK: - Window placement
 
 extension NSWindow {
