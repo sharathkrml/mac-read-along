@@ -6,34 +6,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Keeps the signal sources alive for the app's lifetime.
     private var terminationSources: [DispatchSourceSignal] = []
 
-    /// One engine, one stream: the launcher and read-along sessions share it.
+    /// One engine, one stream: the setup window and read-along sessions share it.
     private let engine = SpeechEngine()
     private let session: SessionController
-    private let settings = SettingsController()
-    private let onboarding: OnboardingController
+    private let setup: SetupController
     private var hotkey: HotkeyManager?
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
     private var cardItem: NSMenuItem!
-    /// True while the launcher sent the user into the window picker.
+    /// True while the setup window sent the user into the window picker.
     private var launcherFlow = false
 
     override init() {
         session = SessionController(engine: engine)
-        onboarding = OnboardingController(engine: engine)
+        setup = SetupController(engine: engine)
         super.init()
 
-        settings.onModelChange = { [weak self] in self?.engine.applyModelChange() }
-        settings.onHotkeyChange = { [weak self] keyCode, modifiers in
+        setup.onModelChange = { [weak self] in self?.engine.applyModelChange() }
+        setup.onHotkeyChange = { [weak self] keyCode, modifiers in
             _ = self?.hotkey?.reregister(keyCode: keyCode, modifiers: modifiers)
         }
-        settings.onCardVisibilityChange = { [weak self] in
+        setup.onCardVisibilityChange = { [weak self] in
             self?.session.syncStatusCardVisibility()
             self?.refreshMenu()
         }
-        settings.onMicrophoneChange = { [weak self] in self?.engine.applyMicrophoneChange() }
+        setup.onMicrophoneChange = { [weak self] in self?.engine.applyMicrophoneChange() }
 
-        onboarding.onStartReading = { [weak self] in
+        setup.onStartReading = { [weak self] in
             guard let self else { return }
             self.launcherFlow = true
             self.session.begin()
@@ -46,14 +45,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshMenu()
         switch session.state {
         case .picking:
-            onboarding.hide()
+            setup.hide()
         case .active:
             launcherFlow = false
         case .idle:
-            // Choosing was cancelled: bring the launcher back.
+            // Choosing was cancelled: bring the front door back.
             if launcherFlow {
                 launcherFlow = false
-                onboarding.show()
+                setup.show()
             }
         }
     }
@@ -81,20 +80,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(toggleItem)
         menu.addItem(.separator())
 
-        let onboardingItem = NSMenuItem(
-            title: "Show Onboarding…",
-            action: #selector(showOnboarding),
-            keyEquivalent: ""
-        )
-        onboardingItem.target = self
-        menu.addItem(onboardingItem)
-        let settingsItem = NSMenuItem(
-            title: "Settings…",
-            action: #selector(showSettings),
+        let setupItem = NSMenuItem(
+            title: "Setup…",
+            action: #selector(showSetup),
             keyEquivalent: ","
         )
-        settingsItem.target = self
-        menu.addItem(settingsItem)
+        setupItem.target = self
+        menu.addItem(setupItem)
         cardItem = NSMenuItem(
             title: "Hide Status Card",
             action: #selector(toggleCard),
@@ -109,21 +101,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: "q"
         ))
 
-        // Submenu targets for the static items above.
-        menu.items.forEach { item in
-            if item.action == #selector(showOnboarding) {
-                item.target = self
-            }
-        }
         statusItem.menu = menu
 
         hotkey = HotkeyManager { [weak self] in self?.session.toggle() }
         let hotkeyStatus = hotkey?.register() ?? -1
         Log.note("hotkey register status: \(hotkeyStatus)")
 
-        // The launcher is the app's front door: it shows permissions, warms the
-        // engine, and sends the reader straight into picking a window.
-        onboarding.show()
+        // The setup window is the app's front door: permissions, engine, and
+        // every setting in one place, sending the reader straight into picking
+        // a window.
+        setup.show()
 
         installShortcutMonitor()
         installTerminationHandlers()
@@ -148,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard event.modifierFlags.contains(.command) else { return event }
             switch event.charactersIgnoringModifiers {
             case ",":
-                MainActor.assumeIsolated { self?.showSettings() }
+                MainActor.assumeIsolated { self?.showSetup() }
                 return nil
             case "w":
                 MainActor.assumeIsolated { NSApp.keyWindow?.performClose(nil) }
@@ -169,12 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         session.toggle()
     }
 
-    @objc private func showOnboarding() {
-        onboarding.show()
-    }
-
-    @objc private func showSettings() {
-        settings.show()
+    @objc private func showSetup() {
+        setup.show()
     }
 
     @objc private func toggleCard() {

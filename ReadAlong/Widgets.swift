@@ -128,7 +128,7 @@ enum Widget {
 // MARK: - Backdrop
 
 /// Graphite gradient with a faint amber glow in the upper right, used by the
-/// reader, onboarding and settings windows.
+/// reader and the setup window.
 final class BackdropView: NSView {
     private let gradient = CAGradientLayer()
     private let glow = CAGradientLayer()
@@ -433,7 +433,7 @@ final class WaveformView: NSView {
 // MARK: - Microphone picker
 
 extension NSPopUpButton {
-    /// Rows shared by the microphone pickers in Settings and the status card.
+    /// Rows shared by the microphone pickers in the setup window and the status card.
     /// A saved device that is gone stays listed so it can be reselected.
     func setMicrophoneChoices(preferredID: String) {
         let choices = MicrophoneCatalog.choices(preferredID: preferredID)

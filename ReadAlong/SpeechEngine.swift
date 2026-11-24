@@ -56,8 +56,8 @@ final class SpeechEngine {
     private var server: Process?
     private var socket: SpeechSocket?
     private let audio = AudioCapture()
-    /// Which consumer opened the microphone stream, so onboarding can shut
-    /// down its test without killing a live session.
+    /// Which consumer opened the microphone stream, so the setup window can
+    /// shut down its test without killing a live session.
     private(set) var streamOwner: ObjectIdentifier?
     /// The sidecar's hard ceiling: the model needs about 2.5 GB, so anything
     /// near this means the allocator is running away and the machine is about
@@ -66,7 +66,7 @@ final class SpeechEngine {
     private var memoryWatchdog: Task<Void, Never>?
 
     /// Installs and starts the sidecar without touching the microphone —
-    /// the onboarding engine step.
+    /// the setup window's engine step.
     func prepare() async throws {
         let binary = try await ensureRuntime()
         try await ensureServer(binary: binary)

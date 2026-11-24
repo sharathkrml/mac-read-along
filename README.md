@@ -13,7 +13,7 @@ Everything in the v1 spec is built:
 - Auto-scroll on every surface with a manual-scroll back-off.
 - A launcher on every app open: live permission statuses, an engine that loads itself, and a live microphone test (waveform plus transcription). Start reading leads straight into picking a window; cancel brings the launcher back.
 - Highlights adapt to the captured window's brightness, so light PDFs stay readable and dark apps still get a visible cue.
-- A Settings window (model, microphone, hotkey, status-card visibility) and a draggable status card with a live waveform, a microphone picker, and the last words heard.
+- A single Setup window — permissions, a live voice test, and every setting (model, microphone, hotkey, status-card visibility) editable in place — plus a draggable status card with a live waveform, a microphone picker, and the last words heard.
 
 Deliberately deferred: appearance customization, custom breath-group size, and image-only PDFs (they show a clear unsupported state).
 

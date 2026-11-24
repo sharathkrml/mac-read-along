@@ -21,7 +21,7 @@ enum MicrophoneError: LocalizedError {
     }
 }
 
-/// Maps 16 kHz float32 PCM to a 0…1 level for the onboarding waveform.
+/// Maps 16 kHz float32 PCM to a 0…1 level for the setup window's waveform.
 enum AudioLevel {
     static func rms(_ data: Data) -> Float {
         data.withUnsafeBytes { raw in
@@ -61,7 +61,7 @@ enum MicrophoneCatalog {
         ).devices
     }
 
-    /// Picker rows shared by Settings and the floating card. The system-default
+    /// Picker rows shared by the setup window and the floating card. The system-default
     /// row names the device it currently resolves to so the choice is visible
     /// without opening the menu.
     static func choices(preferredID: String) -> [Choice] {

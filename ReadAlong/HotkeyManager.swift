@@ -80,7 +80,7 @@ final class HotkeyManager {
         return result
     }
 
-    /// Human form like "⌥⌘R" for onboarding and settings. shortcut: en-US
+    /// Human form like "⌥⌘R" for the setup window. shortcut: en-US
     /// layout only; unmapped keys display as "Key <code>".
     nonisolated static func displayString(keyCode: UInt32, modifiers: UInt32) -> String {
         var glyphs = ""

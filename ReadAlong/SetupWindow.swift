@@ -1,14 +1,21 @@
 import AppKit
 import AVFoundation
 
-/// The gated first-run experience: permissions with live status, an engine
-/// that loads itself, and a live microphone test with waveform and transcript.
-/// Shown again whenever a required permission is missing at launch.
+/// The app's single surface: permissions with live status, an engine that
+/// loads itself, a live microphone test, and every setting (model, hotkey,
+/// microphone, status card) editable in place with the effect visible in the
+/// same window. Shown at launch and whenever a required permission is
+/// missing; all values persist and apply immediately.
 @MainActor
-final class OnboardingController: NSObject, NSWindowDelegate {
+final class SetupController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private let engine: SpeechEngine
-    /// Called when the user leaves the launcher to pick a window to read.
+    /// Called when the user leaves the setup window to pick a window to read.
     var onStartReading: (() -> Void)?
+    var onModelChange: (() -> Void)?
+    var onHotkeyChange: ((UInt32, UInt32) -> Void)?
+    var onCardVisibilityChange: (() -> Void)?
+    var onMicrophoneChange: (() -> Void)?
+
     private var window: NSWindow?
     private var micRow: PermissionRow?
     private var screenRow: PermissionRow?
@@ -17,10 +24,15 @@ final class OnboardingController: NSObject, NSWindowDelegate {
     private var engineDetailLabel: NSTextField?
     private var engineActivity: ActivityBars?
     private var engineButton: PillButton?
+    private var modelField: NSTextField?
     private var continueButton: PillButton?
     private var waveform: WaveformView?
     private var transcriptLabel: NSTextField?
     private var testStatusLabel: NSTextField?
+    private var micPicker: NSPopUpButton?
+    private var micHint: NSTextField?
+    private var hotkeyRecorder: HotkeyRecorderView?
+    private var cardSwitch: PillSwitch?
     private var cards: [NSView] = []
     private var enginePrepared = false
     private var preparing = false
@@ -47,10 +59,12 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             window = makeWindow()
         }
         testEnabled = true
+        refreshValues()
         window?.ensureOnVisibleScreen()
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        window?.makeFirstResponder(nil)
         refreshPermissions()
         startEngine()
         animateCards()
@@ -60,6 +74,34 @@ final class OnboardingController: NSObject, NSWindowDelegate {
     func hide() {
         endTest()
         window?.orderOut(nil)
+    }
+
+    // MARK: - Values
+
+    /// Reloads every control from AppSettings; devices plugged in or removed
+    /// while the window was closed must appear (or the system default).
+    private func refreshValues() {
+        modelField?.stringValue = AppSettings.standard.model
+        hotkeyRecorder?.setKeys(HotkeyManager.displayString(
+            keyCode: AppSettings.standard.hotkeyCode,
+            modifiers: AppSettings.standard.hotkeyModifiers
+        ))
+        hotkeyRecorder?.isRecording = false
+        cardSwitch?.isOn = AppSettings.standard.cardVisible
+        micPicker?.setMicrophoneChoices(preferredID: AppSettings.standard.microphoneID)
+        updateMicrophoneHint()
+    }
+
+    /// Names the device capture actually resolves to, so "System default" is
+    /// never a mystery.
+    private func updateMicrophoneHint() {
+        let name = MicrophoneCatalog.resolve(preferredID: AppSettings.standard.microphoneID)?.localizedName
+        micHint?.attributedStringValue = ReaderTheme.micro(
+            name.map { "USING · \($0)" } ?? "NO INPUT DEVICE FOUND",
+            color: name == nil ? ReaderTheme.danger : ReaderTheme.textSecondary,
+            size: 9
+        )
+        micHint?.toolTip = name
     }
 
     // MARK: - Permission rows
@@ -113,7 +155,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         engineButton?.isEnabled = false
         engineButton?.title = "Setting up…"
         engineStatusLabel?.stringValue = "Loading"
-        engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+        engineDetailLabel?.stringValue = "ENGLISH"
         engineActivity?.isActive = true
         testStatusLabel?.attributedStringValue = ReaderTheme.micro("STARTING THE ENGINE", size: 9)
         updateStartButton()
@@ -127,7 +169,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
                 self.engine.stop()
                 self.preparing = false
                 self.engineStatusLabel?.stringValue = "Ready"
-                self.engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+                self.engineDetailLabel?.stringValue = "ENGLISH"
                 self.engineButton?.title = "Ready"
                 self.engineButton?.isEnabled = false
                 self.engineActivity?.isActive = false
@@ -219,7 +261,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         case .listening:
             enginePrepared = true
             engineStatusLabel?.stringValue = "Ready"
-            engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+            engineDetailLabel?.stringValue = "ENGLISH"
             engineActivity?.isActive = false
             engineButton?.title = "Ready"
             engineButton?.isEnabled = false
@@ -262,7 +304,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             )
             if enginePrepared {
                 engineStatusLabel?.stringValue = "Ready"
-                engineDetailLabel?.stringValue = "\(AppSettings.standard.model.uppercased()) · ENGLISH"
+                engineDetailLabel?.stringValue = "ENGLISH"
                 startTestIfPossible()
             }
         }
@@ -303,21 +345,54 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         onStartReading?()
     }
 
+    // MARK: - Setting changes
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let field = notification.object as? NSTextField, field == modelField else { return }
+        commitModel()
+    }
+
+    private func commitModel() {
+        guard let modelField else { return }
+        let name = modelField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, name != AppSettings.standard.model else { return }
+        AppSettings.standard.model = name
+        onModelChange?()
+    }
+
+    private func toggleCard(_ isOn: Bool) {
+        AppSettings.standard.cardVisible = isOn
+        onCardVisibilityChange?()
+    }
+
+    @objc private func microphoneChanged() {
+        AppSettings.standard.microphoneID = micPicker?.selectedItem?.representedObject as? String ?? ""
+        updateMicrophoneHint()
+        onMicrophoneChange?()
+    }
+
+    private func recordHotkey(keyCode: UInt32, carbonModifiers: UInt32) {
+        AppSettings.standard.hotkeyCode = keyCode
+        AppSettings.standard.hotkeyModifiers = carbonModifiers
+        hotkeyRecorder?.setKeys(HotkeyManager.displayString(keyCode: keyCode, modifiers: carbonModifiers))
+        onHotkeyChange?(keyCode, carbonModifiers)
+    }
+
     // MARK: - Window
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 940, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 940, height: 850),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        window.title = "Welcome to Read Along"
+        window.title = "Read Along Setup"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = ReaderTheme.canvas
         window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 860, height: 660)
+        window.minSize = NSSize(width: 860, height: 800)
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.center()
@@ -334,7 +409,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         let kicker = Widget.microLabel("READ ALONG · SETUP", color: ReaderTheme.amber)
         let title = Widget.displayLabel("Settle in.", size: 44, weight: .thin)
         let subtitle = Widget.bodyLabel(
-            "A quiet reading surface that follows your voice. Grant two permissions, then say a few words to test the local engine.",
+            "A quiet reading surface that follows your voice. Grant two permissions, test your voice, and make the engine, shortcut, and microphone yours.",
             size: 13
         )
         let privacy = Widget.capsuleLabel("LOCAL · PRIVATE", tint: ReaderTheme.textSecondary)
@@ -374,16 +449,36 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         permissions.addSubview(screenRow)
         permissions.addSubview(accessibilityRow)
 
-        // Engine widget
+        // Engine widget, with the model editable in place.
         let engineCard = Widget.card()
         let engineKicker = Widget.microLabel("02 · SPEECH ENGINE")
         let engineTitle = Widget.displayLabel("Loading", size: 32, weight: .light)
-        let engineDetail = Widget.bodyLabel(
-            "\(AppSettings.standard.model.uppercased()) · ENGLISH",
-            size: 11
-        )
+        let engineDetail = Widget.bodyLabel("ENGLISH", size: 11)
         let activity = ActivityBars()
         activity.isActive = true
+
+        let modelField = NSTextField()
+        modelField.translatesAutoresizingMaskIntoConstraints = false
+        modelField.stringValue = AppSettings.standard.model
+        modelField.font = ReaderTheme.display(size: 22, weight: .light)
+        modelField.textColor = ReaderTheme.textPrimary
+        modelField.isBordered = false
+        modelField.drawsBackground = false
+        modelField.focusRingType = .none
+        modelField.delegate = self
+        modelField.placeholderString = AppSettings.defaultModel
+        self.modelField = modelField
+
+        let modelWell = NSView()
+        modelWell.translatesAutoresizingMaskIntoConstraints = false
+        modelWell.wantsLayer = true
+        modelWell.layer?.backgroundColor = ReaderTheme.inset.cgColor
+        modelWell.layer?.cornerRadius = 12
+        modelWell.layer?.borderWidth = 1
+        modelWell.layer?.borderColor = ReaderTheme.hairline.cgColor
+        modelWell.addSubview(modelField)
+
+        let modelHint = Widget.microLabel("EDIT THE MODEL · RESTARTS THE ENGINE", size: 9)
         let engineButton = PillButton("Setting up…", kind: .primary)
         engineButton.isEnabled = false
         engineButton.onPress = { [weak self] in self?.prepareEngine() }
@@ -398,11 +493,25 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         engineCard.addSubview(engineTitle)
         engineCard.addSubview(engineDetail)
         engineCard.addSubview(activity)
+        engineCard.addSubview(modelWell)
+        engineCard.addSubview(modelHint)
         engineCard.addSubview(engineButton)
 
-        // Mic test widget
+        // Mic test widget, with the input device pickable in place.
         let micTest = Widget.card()
         let testKicker = Widget.microLabel("03 · TRY YOUR VOICE")
+        let picker = NSPopUpButton()
+        picker.translatesAutoresizingMaskIntoConstraints = false
+        picker.controlSize = .large
+        picker.font = ReaderTheme.interfaceFont(size: 13)
+        picker.target = self
+        picker.action = #selector(microphoneChanged)
+        picker.addItem(withTitle: "System default")
+        micPicker = picker
+        let hint = Widget.microLabel("USING", size: 9)
+        hint.lineBreakMode = .byTruncatingTail
+        micHint = hint
+
         let waveform = WaveformView()
         let transcript = NSTextField(wrappingLabelWithString: Self.transcriptPlaceholder)
         transcript.translatesAutoresizingMaskIntoConstraints = false
@@ -417,22 +526,25 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         testStatusLabel = testStatus
 
         micTest.addSubview(testKicker)
+        micTest.addSubview(picker)
+        micTest.addSubview(hint)
         micTest.addSubview(waveform)
         micTest.addSubview(transcript)
         micTest.addSubview(testStatus)
 
-        // Ready widget
+        // Ready widget, with the start shortcut recordable in place.
         let ready = Widget.card()
         let readyKicker = Widget.microLabel("READY WHEN YOU ARE")
         let readyTitle = Widget.displayLabel("Go.", size: 40, weight: .thin)
-        let hotkey = HotkeyManager.displayString(
-            keyCode: AppSettings.standard.hotkeyCode,
-            modifiers: AppSettings.standard.hotkeyModifiers
-        )
         let readyHint = Widget.bodyLabel(
-            "Start reading, then click the browser or PDF window you want to follow. \(hotkey) does the same from anywhere.",
+            "Start reading, then click the browser or PDF window you want to follow. The shortcut below works from anywhere.",
             size: 11
         )
+        let recorder = HotkeyRecorderView()
+        recorder.onRecord = { [weak self] keyCode, modifiers in
+            self?.recordHotkey(keyCode: keyCode, carbonModifiers: modifiers)
+        }
+        hotkeyRecorder = recorder
         let startButton = PillButton("Start reading", kind: .primary)
         startButton.isEnabled = false
         startButton.onPress = { [weak self] in self?.startReading() }
@@ -441,13 +553,45 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         ready.addSubview(readyKicker)
         ready.addSubview(readyTitle)
         ready.addSubview(readyHint)
+        ready.addSubview(recorder)
         ready.addSubview(startButton)
+
+        // Status card widget
+        let statusCard = Widget.card()
+        let statusKicker = Widget.microLabel("STATUS CARD")
+        let statusTitle = Widget.titleLabel("Floating session widget", size: 15)
+        let statusBody = Widget.bodyLabel(
+            "Shows the engine state while you read in other apps.",
+            size: 11
+        )
+        let cardSwitch = PillSwitch()
+        cardSwitch.onToggle = { [weak self] isOn in self?.toggleCard(isOn) }
+        self.cardSwitch = cardSwitch
+
+        statusCard.addSubview(statusKicker)
+        statusCard.addSubview(statusTitle)
+        statusCard.addSubview(statusBody)
+        statusCard.addSubview(cardSwitch)
+
+        // About card
+        let aboutCard = Widget.card()
+        let aboutKicker = Widget.microLabel("ABOUT")
+        let aboutTitle = Widget.displayLabel("Read Along", size: 20, weight: .light)
+        let aboutBody = Widget.bodyLabel("Local speech. No cloud. English.", size: 11)
+        let version = Widget.microLabel("VERSION 1.0 · PHONON-2", size: 9)
+
+        aboutCard.addSubview(aboutKicker)
+        aboutCard.addSubview(aboutTitle)
+        aboutCard.addSubview(aboutBody)
+        aboutCard.addSubview(version)
 
         content.addSubview(permissions)
         content.addSubview(engineCard)
         content.addSubview(micTest)
         content.addSubview(ready)
-        cards = [permissions, engineCard, micTest, ready]
+        content.addSubview(statusCard)
+        content.addSubview(aboutCard)
+        cards = [permissions, engineCard, micTest, ready, statusCard, aboutCard]
 
         NSLayoutConstraint.activate([
             backdrop.topAnchor.constraint(equalTo: content.topAnchor),
@@ -481,12 +625,22 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             micTest.leadingAnchor.constraint(equalTo: permissions.leadingAnchor),
             micTest.widthAnchor.constraint(equalTo: permissions.widthAnchor),
             micTest.topAnchor.constraint(equalTo: permissions.bottomAnchor, constant: 16),
-            micTest.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
 
             ready.leadingAnchor.constraint(equalTo: micTest.trailingAnchor, constant: 16),
             ready.trailingAnchor.constraint(equalTo: engineCard.trailingAnchor),
             ready.topAnchor.constraint(equalTo: micTest.topAnchor),
-            ready.bottomAnchor.constraint(equalTo: micTest.bottomAnchor),
+            ready.heightAnchor.constraint(equalTo: micTest.heightAnchor),
+
+            statusCard.leadingAnchor.constraint(equalTo: permissions.leadingAnchor),
+            statusCard.trailingAnchor.constraint(equalTo: permissions.trailingAnchor),
+            statusCard.topAnchor.constraint(equalTo: micTest.bottomAnchor, constant: 16),
+            statusCard.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -24),
+
+            aboutCard.leadingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: 16),
+            aboutCard.trailingAnchor.constraint(equalTo: engineCard.trailingAnchor),
+            aboutCard.topAnchor.constraint(equalTo: statusCard.topAnchor),
+            aboutCard.bottomAnchor.constraint(equalTo: statusCard.bottomAnchor),
+            aboutCard.widthAnchor.constraint(equalTo: statusCard.widthAnchor),
 
             // Permissions content
             permissionKicker.leadingAnchor.constraint(equalTo: permissions.leadingAnchor, constant: 20),
@@ -518,24 +672,44 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             activity.centerYAnchor.constraint(equalTo: engineKicker.centerYAnchor),
 
             engineTitle.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
-            engineTitle.topAnchor.constraint(equalTo: engineKicker.bottomAnchor, constant: 14),
+            engineTitle.topAnchor.constraint(equalTo: engineKicker.bottomAnchor, constant: 8),
 
             engineDetail.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
-            engineDetail.topAnchor.constraint(equalTo: engineTitle.bottomAnchor, constant: 4),
+            engineDetail.topAnchor.constraint(equalTo: engineTitle.bottomAnchor, constant: 2),
             engineDetail.trailingAnchor.constraint(lessThanOrEqualTo: engineCard.trailingAnchor, constant: -20),
 
+            modelWell.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
+            modelWell.trailingAnchor.constraint(equalTo: engineCard.trailingAnchor, constant: -20),
+            modelWell.topAnchor.constraint(equalTo: engineDetail.bottomAnchor, constant: 12),
+            modelWell.heightAnchor.constraint(equalToConstant: 48),
+
+            modelField.leadingAnchor.constraint(equalTo: modelWell.leadingAnchor, constant: 14),
+            modelField.trailingAnchor.constraint(equalTo: modelWell.trailingAnchor, constant: -14),
+            modelField.centerYAnchor.constraint(equalTo: modelWell.centerYAnchor),
+
+            modelHint.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
+            modelHint.bottomAnchor.constraint(equalTo: engineCard.bottomAnchor, constant: -20),
+
             engineButton.leadingAnchor.constraint(equalTo: engineKicker.leadingAnchor),
-            engineButton.bottomAnchor.constraint(equalTo: engineCard.bottomAnchor, constant: -20),
-            engineButton.widthAnchor.constraint(equalToConstant: 150),
+            engineButton.bottomAnchor.constraint(equalTo: modelHint.topAnchor, constant: -10),
+            engineButton.widthAnchor.constraint(equalToConstant: 120),
             engineButton.heightAnchor.constraint(equalToConstant: 34),
 
             // Mic test content
             testKicker.leadingAnchor.constraint(equalTo: micTest.leadingAnchor, constant: 20),
             testKicker.topAnchor.constraint(equalTo: micTest.topAnchor, constant: 20),
 
+            picker.leadingAnchor.constraint(equalTo: testKicker.leadingAnchor),
+            picker.topAnchor.constraint(equalTo: testKicker.bottomAnchor, constant: 10),
+            picker.widthAnchor.constraint(equalToConstant: 250),
+
+            hint.leadingAnchor.constraint(equalTo: picker.trailingAnchor, constant: 14),
+            hint.trailingAnchor.constraint(lessThanOrEqualTo: micTest.trailingAnchor, constant: -20),
+            hint.centerYAnchor.constraint(equalTo: picker.centerYAnchor),
+
             waveform.leadingAnchor.constraint(equalTo: testKicker.leadingAnchor),
             waveform.trailingAnchor.constraint(equalTo: micTest.trailingAnchor, constant: -20),
-            waveform.topAnchor.constraint(equalTo: testKicker.bottomAnchor, constant: 12),
+            waveform.topAnchor.constraint(equalTo: picker.bottomAnchor, constant: 14),
             waveform.heightAnchor.constraint(equalToConstant: 58),
 
             transcript.leadingAnchor.constraint(equalTo: testKicker.leadingAnchor),
@@ -555,13 +729,47 @@ final class OnboardingController: NSObject, NSWindowDelegate {
             readyTitle.topAnchor.constraint(equalTo: readyKicker.bottomAnchor, constant: 8),
 
             readyHint.leadingAnchor.constraint(equalTo: readyKicker.leadingAnchor),
-            readyHint.trailingAnchor.constraint(lessThanOrEqualTo: startButton.leadingAnchor, constant: -16),
+            readyHint.trailingAnchor.constraint(lessThanOrEqualTo: ready.trailingAnchor, constant: -20),
             readyHint.topAnchor.constraint(equalTo: readyTitle.bottomAnchor, constant: 6),
+
+            recorder.leadingAnchor.constraint(equalTo: readyKicker.leadingAnchor),
+            recorder.trailingAnchor.constraint(equalTo: ready.trailingAnchor, constant: -20),
+            recorder.topAnchor.constraint(equalTo: readyHint.bottomAnchor, constant: 14),
+            recorder.heightAnchor.constraint(equalToConstant: 60),
 
             startButton.trailingAnchor.constraint(equalTo: ready.trailingAnchor, constant: -20),
             startButton.bottomAnchor.constraint(equalTo: ready.bottomAnchor, constant: -20),
             startButton.widthAnchor.constraint(equalToConstant: 170),
             startButton.heightAnchor.constraint(equalToConstant: 38),
+
+            // Status content
+            statusKicker.leadingAnchor.constraint(equalTo: statusCard.leadingAnchor, constant: 20),
+            statusKicker.topAnchor.constraint(equalTo: statusCard.topAnchor, constant: 18),
+
+            statusTitle.leadingAnchor.constraint(equalTo: statusKicker.leadingAnchor),
+            statusTitle.topAnchor.constraint(equalTo: statusKicker.bottomAnchor, constant: 8),
+
+            statusBody.leadingAnchor.constraint(equalTo: statusKicker.leadingAnchor),
+            statusBody.topAnchor.constraint(equalTo: statusTitle.bottomAnchor, constant: 4),
+            statusBody.trailingAnchor.constraint(lessThanOrEqualTo: cardSwitch.leadingAnchor, constant: -16),
+
+            cardSwitch.trailingAnchor.constraint(equalTo: statusCard.trailingAnchor, constant: -20),
+            cardSwitch.centerYAnchor.constraint(equalTo: statusCard.centerYAnchor),
+            cardSwitch.widthAnchor.constraint(equalToConstant: 46),
+            cardSwitch.heightAnchor.constraint(equalToConstant: 26),
+
+            // About content
+            aboutKicker.leadingAnchor.constraint(equalTo: aboutCard.leadingAnchor, constant: 20),
+            aboutKicker.topAnchor.constraint(equalTo: aboutCard.topAnchor, constant: 18),
+
+            aboutTitle.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
+            aboutTitle.topAnchor.constraint(equalTo: aboutKicker.bottomAnchor, constant: 8),
+
+            aboutBody.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
+            aboutBody.topAnchor.constraint(equalTo: aboutTitle.bottomAnchor, constant: 3),
+
+            version.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
+            version.bottomAnchor.constraint(equalTo: aboutCard.bottomAnchor, constant: -20),
         ])
 
         return window
@@ -590,6 +798,131 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         endTest()
+    }
+}
+
+/// Click to arm, press the combination, done. Esc while armed cancels.
+@MainActor
+final class HotkeyRecorderView: NSView {
+    var onRecord: ((UInt32, UInt32) -> Void)?
+    private let keys = KeycapsView()
+    private let promptLabel = Widget.microLabel("CLICK TO RECORD", size: 9)
+
+    var isRecording = false {
+        didSet {
+            promptLabel.attributedStringValue = ReaderTheme.micro(
+                isRecording ? "PRESS KEYS…" : "CLICK TO RECORD",
+                color: isRecording ? ReaderTheme.amber : ReaderTheme.textSecondary,
+                size: 9
+            )
+            layer?.borderColor = (isRecording ? ReaderTheme.amber : ReaderTheme.hairline).cgColor
+            needsDisplay = true
+            if isRecording {
+                window?.makeFirstResponder(self)
+            }
+        }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.backgroundColor = ReaderTheme.inset.cgColor
+        layer?.cornerRadius = 12
+        layer?.borderWidth = 1
+        layer?.borderColor = ReaderTheme.hairline.cgColor
+
+        addSubview(keys)
+        addSubview(promptLabel)
+
+        NSLayoutConstraint.activate([
+            keys.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            keys.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -6),
+            promptLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            promptLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("HotkeyRecorderView is built in code")
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        isRecording = !isRecording
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard isRecording else {
+            super.keyDown(with: event)
+            return
+        }
+        if event.keyCode == 53 { // Esc cancels recording.
+            isRecording = false
+            return
+        }
+        let modifiers = HotkeyManager.carbonModifiers(from: event.modifierFlags)
+        // A shortcut without a system modifier risks swallowing plain typing.
+        guard modifiers != 0 else { return }
+        isRecording = false
+        onRecord?(UInt32(event.keyCode), modifiers)
+    }
+
+    func setKeys(_ display: String) {
+        keys.setKeys(display)
+    }
+}
+
+/// A small amber capsule switch used for the status-card setting.
+@MainActor
+final class PillSwitch: NSView {
+    var onToggle: ((Bool) -> Void)?
+
+    var isOn = false {
+        didSet { update() }
+    }
+
+    private let knob = NSView()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 13
+        layer?.borderWidth = 1
+        layer?.borderColor = ReaderTheme.hairline.cgColor
+
+        knob.translatesAutoresizingMaskIntoConstraints = false
+        knob.wantsLayer = true
+        knob.layer?.cornerRadius = 9
+        knob.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.92).cgColor
+        addSubview(knob)
+
+        NSLayoutConstraint.activate([
+            knob.centerYAnchor.constraint(equalTo: centerYAnchor),
+            knob.widthAnchor.constraint(equalToConstant: 18),
+            knob.heightAnchor.constraint(equalToConstant: 18),
+        ])
+        update()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("PillSwitch is built in code")
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isOn.toggle()
+        onToggle?(isOn)
+    }
+
+    private func update() {
+        layer?.backgroundColor = (isOn ? ReaderTheme.amber : ReaderTheme.inset).cgColor
+        let offset: CGFloat = isOn ? 24 : 4
+        for constraint in constraints where constraint.firstItem === knob && constraint.firstAttribute == .leading {
+            constraint.isActive = false
+        }
+        knob.leadingAnchor.constraint(equalTo: leadingAnchor, constant: offset).isActive = true
     }
 }
 
