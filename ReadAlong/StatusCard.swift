@@ -1,45 +1,4 @@
 import AppKit
-import AVFoundation
-import ApplicationServices
-
-/// Where the fix for a missing permission lives, so every surface deep-links
-/// to the same place.
-enum Permissions {
-    @MainActor
-    static func microphoneGranted() -> Bool {
-        AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-    }
-
-    @MainActor
-    static func screenRecordingGranted() -> Bool {
-        CGPreflightScreenCaptureAccess()
-    }
-
-    @MainActor
-    static func accessibilityGranted() -> Bool {
-        AXIsProcessTrusted()
-    }
-
-    @MainActor
-    static func openMicrophonePane() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    @MainActor
-    static func openScreenRecordingPane() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    @MainActor
-    static func promptForAccessibility() {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-    }
-}
 
 /// The floating session widget: state, live waveform, the microphone, the last
 /// words heard, and stop. Draggable, non-activating, restorable from the menu
@@ -131,7 +90,6 @@ final class StatusCard {
             setSnippet(message, color: ReaderTheme.danger)
             retryButton.isHidden = false
         }
-        refreshMicrophone()
     }
 
     /// The last words the engine heard, so the reader can see it is following.

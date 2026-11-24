@@ -88,7 +88,7 @@ final class SessionController {
     }
 
     private func beginPicking() {
-        guard ScreenRecordingPermission.ensure() else {
+        guard Permissions.ensureScreenRecording() else {
             Log.note("screen recording not granted; staying idle")
             return
         }

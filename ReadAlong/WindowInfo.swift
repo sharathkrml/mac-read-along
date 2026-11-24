@@ -77,14 +77,4 @@ struct WindowInfo: Identifiable, Equatable {
             frame: ScreenCoordinates.appKitRect(fromCG: cgRect)
         )
     }
-
-    static func isOnScreen(windowID: CGWindowID) -> Bool {
-        guard let raw = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else { return false }
-        return raw.contains {
-            ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
-        }
-    }
 }

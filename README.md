@@ -11,7 +11,7 @@ Everything in the v1 spec is built:
 - Sentence tracking with the agreed rules: finishing a sentence advances the cursor; a three-word phrase moves it anywhere, forward or back; one or two stray words never move it.
 - Within the tracked sentence, the overlay follows the voice word by word: a three-word breath group in amber, the next group faintly, and a dotted rule under the exact word. Word geometry comes from Vision and falls back to the sentence rectangles when unavailable.
 - Auto-scroll on every surface with a manual-scroll back-off.
-- A launcher on every app open: live permission statuses, an engine that loads itself, and a live microphone test (waveform plus transcription). Start reading leads straight into picking a window; cancel brings the launcher back.
+- The Setup window on every app open: live permission statuses, an engine that loads itself, and a live microphone test (waveform plus transcription). Start reading leads straight into picking a window; cancel brings it back.
 - Highlights adapt to the captured window's brightness, so light PDFs stay readable and dark apps still get a visible cue.
 - A single Setup window — permissions, a live voice test, and every setting (model, microphone, hotkey, status-card visibility) editable in place — plus a draggable status card with a live waveform, a microphone picker, and the last words heard.
 
@@ -29,7 +29,7 @@ Other targets: `make build`, `make generate`, `make test`, `make clean`. Or open
 
 ## Use
 
-1. Open Read Along. The launcher shows permissions, warms the local engine, and lets you say a few words to watch the live waveform and transcription. The microphone test stops when you leave the screen.
+1. Open Read Along. The setup window shows permissions, warms the local engine, and lets you say a few words to watch the live waveform and transcription. The microphone test stops when you leave the screen.
 
 2. Click **Start reading** (or press **⌥⌘R**), then click the browser, editor, or Preview window you want to follow. Preview is just another window: open your PDF there, start reading, and the app tracks it in place.
 
@@ -37,7 +37,7 @@ Other targets: `make build`, `make generate`, `make test`, `make clean`. Or open
 
 ## Tests
 
-`make test` runs 85 tests: display-coordinate conversion, window filtering, sentence splitting, word tokenization, OCR surface building (including multi-column windows and word boxes), surface-tone classification, frame-change detection (including the OCR skip on still frames), auto-scroll thresholds, the tracking rules (advance, relocation, single-word safety, short sentences, fuzzy tolerance, re-capture survival), word-marker alignment, breath-group windows and band merging, audio-level scaling, the cache-capped speech-engine launch and memory watchdog, and settings persistence.
+`make test` runs 84 tests: display-coordinate conversion, window filtering, sentence splitting, word tokenization, OCR surface building (including multi-column windows and word boxes), surface-tone classification, frame-change detection (including the OCR skip on still frames), auto-scroll thresholds, the tracking rules (advance, relocation, single-word safety, short sentences, fuzzy tolerance, re-capture survival), word-marker alignment, breath-group windows and band merging, audio-level scaling, the cache-capped speech-engine launch and memory watchdog, and settings persistence.
 
 ## Docs
 

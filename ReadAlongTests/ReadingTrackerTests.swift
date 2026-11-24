@@ -235,12 +235,13 @@ final class ReadingTrackerTests: XCTestCase {
         XCTAssertEqual(tracker.wordCursor, 5)
     }
 
-    func testManualMoveDropsTheOldWordMarker() {
+    func testAdvancingDropsTheOldWordMarker() {
         let tracker = makeTracker(fiveSentences)
-        say(tracker, "alpha beta gamma")
+        say(tracker, "iota kappa lambda")
         XCTAssertEqual(tracker.wordCursor, 2)
 
-        tracker.moveCursor(by: 1)
+        say(tracker, "iota kappa lambda mu")
+        XCTAssertEqual(tracker.cursor, 3)
         XCTAssertNil(tracker.wordCursor)
     }
 
@@ -252,19 +253,5 @@ final class ReadingTrackerTests: XCTestCase {
         tracker.reload(makeSentences(["Alpha beta gamma delta epsilon"]))
         XCTAssertEqual(tracker.cursor, 0)
         XCTAssertEqual(tracker.wordCursor, 4)
-    }
-
-    // MARK: - Manual movement
-
-    func testMoveCursorStepsAndClamps() {
-        let tracker = makeTracker(fiveSentences)
-        tracker.moveCursor(by: 1)
-        XCTAssertEqual(tracker.cursor, 0)
-        tracker.moveCursor(by: 3)
-        XCTAssertEqual(tracker.cursor, 3)
-        tracker.moveCursor(by: -10)
-        XCTAssertEqual(tracker.cursor, 0)
-        tracker.moveCursor(by: 99)
-        XCTAssertEqual(tracker.cursor, 4)
     }
 }

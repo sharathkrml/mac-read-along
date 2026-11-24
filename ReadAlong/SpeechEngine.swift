@@ -332,20 +332,30 @@ final class SpeechEngine {
         return start
     }
 
-    private static func uvURL() -> URL? {        if let path = ProcessInfo.processInfo.environment["PATH"] {
+    /// First executable named `name` on PATH, falling back to `known` paths.
+    private static func firstExecutable(named name: String, known: [String]) -> URL? {
+        if let path = ProcessInfo.processInfo.environment["PATH"] {
             for component in path.split(separator: ":") {
-                let candidate = URL(fileURLWithPath: String(component)).appendingPathComponent("uv")
+                let candidate = URL(fileURLWithPath: String(component)).appendingPathComponent(name)
                 if FileManager.default.isExecutableFile(atPath: candidate.path) {
                     return candidate
                 }
             }
         }
-        let known = [
-            "/opt/homebrew/bin/uv",
-            "/usr/local/bin/uv",
-            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/uv").path,
-        ]
-        return known.first { FileManager.default.isExecutableFile(atPath: $0) }.map { URL(fileURLWithPath: $0) }
+        return known
+            .map { URL(fileURLWithPath: $0) }
+            .first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
+
+    private static func uvURL() -> URL? {
+        firstExecutable(
+            named: "uv",
+            known: [
+                "/opt/homebrew/bin/uv",
+                "/usr/local/bin/uv",
+                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/uv").path,
+            ]
+        )
     }
 
     private static func ensureMicrophonePermission() async throws {
@@ -500,15 +510,7 @@ final class SpeechEngine {
             return managed
         }
 
-        if let path = ProcessInfo.processInfo.environment["PATH"] {
-            for component in path.split(separator: ":") {
-                let candidate = URL(fileURLWithPath: String(component)).appendingPathComponent("fermion")
-                if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                    return candidate
-                }
-            }
-        }
-        return nil
+        return firstExecutable(named: "fermion", known: [])
     }
 
     // MARK: - Socket

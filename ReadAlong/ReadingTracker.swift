@@ -19,21 +19,8 @@ final class ReadingTracker {
         return sentences[cursor]
     }
 
-    var nextSentence: Sentence? {
-        guard let cursor, sentences.indices.contains(cursor + 1) else { return nil }
-        return sentences[cursor + 1]
-    }
-
     func load(sentences: [Sentence]) {
         self.sentences = sentences
-        cursor = nil
-        wordCursor = nil
-        committedWords = []
-        partialWords = []
-        onChange?()
-    }
-
-    func resetPosition() {
         cursor = nil
         wordCursor = nil
         committedWords = []
@@ -53,16 +40,6 @@ final class ReadingTracker {
         }
         wordCursor = cursor.flatMap { _ in previousWord }
         onChange?()
-    }
-
-    /// Manual step (keyboard controls); speech can still relocate afterwards.
-    /// Stepping forward from an unknown cursor starts at the first sentence.
-    func moveCursor(by delta: Int) {
-        guard !sentences.isEmpty else { return }
-        let base = cursor ?? (delta > 0 ? -1 : 0)
-        if setCursor(min(max(base + delta, 0), sentences.count - 1)) {
-            onChange?()
-        }
     }
 
     func handle(_ update: TranscriptUpdate) {

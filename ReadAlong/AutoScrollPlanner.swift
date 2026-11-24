@@ -1,8 +1,8 @@
 import Foundation
 
-/// Decides when the reading surface should scroll and by how much. Pure math
-/// shared by the reader window, PDFs, and external windows; all inputs are
-/// top-down distances from the top of the visible area (y grows downward).
+/// Decides when the reading surface should scroll and by how much. Pure math;
+/// all inputs are top-down distances from the top of the visible area (y
+/// grows downward).
 enum AutoScrollPlanner {
     static let triggerFraction: CGFloat = 2.0 / 3.0
     static let targetFraction: CGFloat = 1.0 / 3.0

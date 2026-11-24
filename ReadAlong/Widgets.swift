@@ -65,35 +65,6 @@ enum Widget {
         return label
     }
 
-    static func iconTile(
-        symbol: String,
-        tint: NSColor = ReaderTheme.amber,
-        size: CGFloat = 44
-    ) -> NSView {
-        let tile = NSView()
-        tile.translatesAutoresizingMaskIntoConstraints = false
-        tile.wantsLayer = true
-        tile.layer?.backgroundColor = tint.withAlphaComponent(0.12).cgColor
-        tile.layer?.cornerRadius = 12
-        tile.layer?.borderWidth = 1
-        tile.layer?.borderColor = tint.withAlphaComponent(0.18).cgColor
-
-        let image = NSImageView()
-        image.translatesAutoresizingMaskIntoConstraints = false
-        image.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        image.contentTintColor = tint
-        image.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: size * 0.42, weight: .medium)
-        tile.addSubview(image)
-
-        NSLayoutConstraint.activate([
-            tile.widthAnchor.constraint(equalToConstant: size),
-            tile.heightAnchor.constraint(equalToConstant: size),
-            image.centerXAnchor.constraint(equalTo: tile.centerXAnchor),
-            image.centerYAnchor.constraint(equalTo: tile.centerYAnchor),
-        ])
-        return tile
-    }
-
     static func capsuleLabel(_ text: String, tint: NSColor = ReaderTheme.textSecondary, size: CGFloat = 9) -> NSView {
         let pill = NSView()
         pill.translatesAutoresizingMaskIntoConstraints = false
@@ -114,21 +85,12 @@ enum Widget {
         ])
         return pill
     }
-
-    static func divider() -> NSView {
-        let line = NSView()
-        line.translatesAutoresizingMaskIntoConstraints = false
-        line.wantsLayer = true
-        line.layer?.backgroundColor = ReaderTheme.hairline.cgColor
-        line.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        return line
-    }
 }
 
 // MARK: - Backdrop
 
 /// Graphite gradient with a faint amber glow in the upper right, used by the
-/// reader and the setup window.
+/// setup window.
 final class BackdropView: NSView {
     private let gradient = CAGradientLayer()
     private let glow = CAGradientLayer()
@@ -173,7 +135,6 @@ final class PillButton: NSButton {
     enum Kind {
         case primary
         case secondary
-        case quiet
     }
 
     var onPress: (() -> Void)?
@@ -248,48 +209,12 @@ final class PillButton: NSButton {
             layer?.borderWidth = 1
             layer?.borderColor = ReaderTheme.hairline.cgColor
             contentTintColor = ReaderTheme.textPrimary
-        case .quiet:
-            layer?.backgroundColor = NSColor.clear.cgColor
-            layer?.borderWidth = 0
-            contentTintColor = ReaderTheme.textSecondary
         }
         updateAppearance()
     }
 
     private func updateAppearance() {
         alphaValue = isEnabled ? 1 : 0.4
-    }
-}
-
-// MARK: - Progress
-
-final class ProgressBar: NSView {
-    var progress: CGFloat = 0 {
-        didSet { needsDisplay = true }
-    }
-    var fillColor = ReaderTheme.amber
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        translatesAutoresizingMaskIntoConstraints = false
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("ProgressBar is built in code")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let radius = bounds.height / 2
-        let track = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
-        ReaderTheme.inset.setFill()
-        track.fill()
-
-        let clamped = min(max(progress, 0), 1)
-        guard clamped > 0 else { return }
-        let fillRect = CGRect(x: 0, y: 0, width: max(bounds.height, bounds.width * clamped), height: bounds.height)
-        let fill = NSBezierPath(roundedRect: fillRect, xRadius: radius, yRadius: radius)
-        fillColor.setFill()
-        fill.fill()
     }
 }
 

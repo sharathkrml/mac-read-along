@@ -14,8 +14,6 @@ enum ReaderTheme {
     static let cardRaised = NSColor(hex: 0x15161A)
     static let inset = NSColor(hex: 0x1E1F24)
     static let hairline = NSColor.white.withAlphaComponent(0.07)
-    static let surface = cardRaised
-    static let surfaceRaised = cardRaised
 
     // Type
     static let textPrimary = NSColor(hex: 0xF3F1EC)
@@ -31,20 +29,8 @@ enum ReaderTheme {
 
     // Data accents
     static let danger = NSColor(hex: 0xE07A7A)
-    static let blue = NSColor(hex: 0x5A9CFF)
-    static let green = NSColor(hex: 0x54D6A0)
-    static let pink = NSColor(hex: 0xEF6F9A)
-    static let purple = NSColor(hex: 0x9B7BF7)
-    static let yellow = NSColor(hex: 0xF7C948)
 
     // Fonts
-    static func readingFont(size: CGFloat = 20) -> NSFont {
-        NSFont(name: "NewYork-Regular", size: size)
-            ?? NSFont(name: "New York", size: size)
-            ?? NSFont(name: "Iowan Old Style", size: size)
-            ?? NSFont.systemFont(ofSize: size)
-    }
-
     static func interfaceFont(size: CGFloat = 12, weight: NSFont.Weight = .regular) -> NSFont {
         NSFont.systemFont(ofSize: size, weight: weight)
     }

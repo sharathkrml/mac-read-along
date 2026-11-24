@@ -36,6 +36,9 @@ final class SetupController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private var cards: [NSView] = []
     private var enginePrepared = false
     private var preparing = false
+    /// True between a model edit and the engine coming back up, so the test
+    /// hint can say why it went quiet.
+    private var restartingForModel = false
     private var testStarting = false
     /// True while this window is open; the mic test must not outlive it.
     private var testEnabled = false
@@ -255,11 +258,18 @@ final class SetupController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             engineStatusLabel?.stringValue = "Loading"
             engineDetailLabel?.stringValue = message
             engineActivity?.isActive = true
-            if !enginePrepared {
+            if restartingForModel {
+                testStatusLabel?.attributedStringValue = ReaderTheme.micro(
+                    "RESTARTING · NEW MODEL",
+                    color: ReaderTheme.amber,
+                    size: 9
+                )
+            } else if !enginePrepared {
                 testStatusLabel?.attributedStringValue = ReaderTheme.micro("STARTING THE ENGINE", size: 9)
             }
         case .listening:
             enginePrepared = true
+            restartingForModel = false
             engineStatusLabel?.stringValue = "Ready"
             engineDetailLabel?.stringValue = "ENGLISH"
             engineActivity?.isActive = false
@@ -271,6 +281,7 @@ final class SetupController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
                 size: 9
             )
         case .failed(let message):
+            restartingForModel = false
             engineActivity?.isActive = false
             waveform?.reset()
             if enginePrepared {
@@ -357,6 +368,7 @@ final class SetupController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let name = modelField.stringValue.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty, name != AppSettings.standard.model else { return }
         AppSettings.standard.model = name
+        restartingForModel = true
         onModelChange?()
     }
 
@@ -578,12 +590,10 @@ final class SetupController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         let aboutKicker = Widget.microLabel("ABOUT")
         let aboutTitle = Widget.displayLabel("Read Along", size: 20, weight: .light)
         let aboutBody = Widget.bodyLabel("Local speech. No cloud. English.", size: 11)
-        let version = Widget.microLabel("VERSION 1.0 · PHONON-2", size: 9)
 
         aboutCard.addSubview(aboutKicker)
         aboutCard.addSubview(aboutTitle)
         aboutCard.addSubview(aboutBody)
-        aboutCard.addSubview(version)
 
         content.addSubview(permissions)
         content.addSubview(engineCard)
@@ -767,9 +777,6 @@ final class SetupController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
             aboutBody.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
             aboutBody.topAnchor.constraint(equalTo: aboutTitle.bottomAnchor, constant: 3),
-
-            version.leadingAnchor.constraint(equalTo: aboutKicker.leadingAnchor),
-            version.bottomAnchor.constraint(equalTo: aboutCard.bottomAnchor, constant: -20),
         ])
 
         return window

@@ -107,10 +107,6 @@ final class HotkeyManager {
         UInt32(kVK_ANSI_0): "0", UInt32(kVK_Space): "Space",
     ]
 
-    private nonisolated static func keyLabel(_ keyCode: UInt32) -> String? {
-        keyLabels[keyCode]
-    }
-
     private func handlePress() {
         Log.note("hotkey pressed")
         onPress()
