@@ -196,6 +196,43 @@ final class SurfaceBuilderTests: XCTestCase {
             "Now the onboarding and the start section everything works clearly."
         )
     }
+
+    /// The reading surface is the column the user clicked to pick the window;
+    /// sidebar and terminal text must not compete for the cursor.
+    func testColumnHintKeepsOnlyTheClickedColumn() {
+        let surface = SurfaceBuilder.build(
+            lines: [
+                line("mac-read-along", x: 0.02, y: 0.95, w: 0.10),
+                line("1d", x: 0.10, y: 0.90, w: 0.04),
+                line("Two behavior polishers landed in the last commit.", x: 0.20, y: 0.88, w: 0.40),
+                line("The engine restarted on the new model.", x: 0.20, y: 0.86, w: 0.35),
+                line("--timestamp=none", x: 0.70, y: 0.30, w: 0.28),
+            ],
+            columnHint: 0.40
+        )
+
+        XCTAssertEqual(surface.sentences.map(\.text), [
+            "Two behavior polishers landed in the last commit.",
+            "The engine restarted on the new model.",
+        ])
+    }
+
+    /// A hint that lands in a gutter (no column contains it) keeps the block
+    /// with the most words instead of the whole window.
+    func testColumnHintInAGutterFallsBackToTheDominantBlock() {
+        let surface = SurfaceBuilder.build(
+            lines: [
+                line("mac-read-along", x: 0.02, y: 0.95, w: 0.10),
+                line("Two behavior polishers landed in the last commit.", x: 0.20, y: 0.88, w: 0.40),
+                line("--timestamp=none", x: 0.70, y: 0.30, w: 0.28),
+            ],
+            columnHint: 0.16
+        )
+
+        XCTAssertEqual(surface.sentences.map(\.text), [
+            "Two behavior polishers landed in the last commit.",
+        ])
+    }
 }
 
 final class SurfaceToneTests: XCTestCase {
@@ -248,3 +285,4 @@ final class FrameDifferenceTests: XCTestCase {
         XCTAssertTrue(FrameDifference.needsRecognition(previous: frame, current: frame, force: true))
     }
 }
+

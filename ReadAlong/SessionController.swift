@@ -33,6 +33,9 @@ final class SessionController {
     private var manualScrollHoldUntil = Date.distantPast
     /// Recaptures right after our own scroll are self-inflicted, not manual.
     private var lastAutoScrollAt = Date.distantPast
+    /// Where the user clicked to pick the window, normalized to its width.
+    /// The reading surface keeps only that column's text (see ADR-0006).
+    private var columnHint: CGFloat?
 
     init(engine: SpeechEngine) {
         self.engine = engine
@@ -71,6 +74,7 @@ final class SessionController {
         lastThumb = nil
         lastFrameSize = nil
         lastRenderedCursor = nil
+        columnHint = nil
         state = .idle
     }
 
@@ -95,7 +99,7 @@ final class SessionController {
         Log.note("screen recording granted; beginning pick")
         state = .picking
         picker.begin(
-            onPick: { [weak self] info in self?.attach(to: info) },
+            onPick: { [weak self] info, point in self?.attach(to: info, at: point) },
             onCancel: { [weak self] in self?.state = .idle }
         )
     }
@@ -107,10 +111,12 @@ final class SessionController {
 
     // MARK: - Session
 
-    private func attach(to info: WindowInfo) {
+    private func attach(to info: WindowInfo, at point: CGPoint) {
         Log.note("attached to window \(info.windowID) \(info.ownerName)")
         picker.end()
         lastRenderedCursor = nil
+        // The click that picked the window names the reading column.
+        columnHint = (point.x - info.frame.minX) / max(info.frame.width, 1)
         state = .active(info.windowID)
         overlay.begin(window: info) { [weak self] in
             self?.end()
@@ -230,7 +236,7 @@ final class SessionController {
             manualScrollHoldUntil = Date().addingTimeInterval(2.5)
         }
 
-        let newSurface = SurfaceBuilder.build(lines: lines)
+        let newSurface = SurfaceBuilder.build(lines: lines, columnHint: columnHint)
         surface = newSurface
 
         if newSurface.sentences.isEmpty {
