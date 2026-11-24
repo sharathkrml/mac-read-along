@@ -31,13 +31,13 @@ Other targets: `make build`, `make generate`, `make test`, `make clean`. Or open
 
 1. Open Read Along. The setup window shows permissions, warms the local engine, and lets you say a few words to watch the live waveform and transcription. The microphone test stops when you leave the screen.
 
-2. Click **Start reading** (or press **⌥⌘R**), then click the browser, editor, or Preview window you want to follow. Preview is just another window: open your PDF there, start reading, and the app tracks it in place.
+2. Click **Start reading** (or press **⌥⌘R**), then click the browser, editor, or Preview window you want to follow. The column you click is the one that gets tracked — sidebars, terminals, and other panels stay out of the way. Preview is just another window: open your PDF there, start reading, and the app tracks it in place.
 
 3. Read aloud. The three words under your voice get the amber wash and solid rule; the next three get the faint cue, and a dotted rule plus a deeper wash mark the exact word being spoken. The page scrolls itself as you go; scrolling by hand backs it off for a moment.
 
 ## Tests
 
-`make test` runs 84 tests: display-coordinate conversion, window filtering, sentence splitting, word tokenization, OCR surface building (including multi-column windows and word boxes), surface-tone classification, frame-change detection (including the OCR skip on still frames), auto-scroll thresholds, the tracking rules (advance, relocation, single-word safety, short sentences, fuzzy tolerance, re-capture survival), word-marker alignment, breath-group windows and band merging, audio-level scaling, the cache-capped speech-engine launch and memory watchdog, and settings persistence.
+`make test` runs 87 tests: display-coordinate conversion, window filtering, sentence splitting, word tokenization, OCR surface building (including multi-column windows, word boxes, and the clicked-column rule), surface-tone classification, frame-change detection (including the OCR skip on still frames), auto-scroll thresholds, the tracking rules (advance, relocation, single-word safety, short sentences, fuzzy tolerance, re-capture survival), word-marker alignment, breath-group windows and band merging, highlight placement on a secondary screen, audio-level scaling, the cache-capped speech-engine launch and memory watchdog, and settings persistence.
 
 ## Docs
 

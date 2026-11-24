@@ -7,13 +7,13 @@ final class WindowPicker {
     private var pickerWindows: [PickerWindow] = []
     private var candidates: [WindowInfo] = []
     private var hovered: WindowInfo?
-    private var onPick: ((WindowInfo) -> Void)?
+    private var onPick: ((WindowInfo, CGPoint) -> Void)?
     private var onCancel: (() -> Void)?
     private var pollTask: Task<Void, Never>?
     private var keyMonitor: Any?
     private var isActive = false
 
-    func begin(onPick: @escaping (WindowInfo) -> Void, onCancel: @escaping () -> Void) {
+    func begin(onPick: @escaping (WindowInfo, CGPoint) -> Void, onCancel: @escaping () -> Void) {
         guard !isActive else { return }
         isActive = true
         self.onPick = onPick
@@ -83,7 +83,7 @@ final class WindowPicker {
         Log.note("picked window \(info.windowID) \(info.ownerName)")
         let handler = onPick
         finish()
-        handler?(info)
+        handler?(info, globalPoint)
     }
 
     private func cancel() {

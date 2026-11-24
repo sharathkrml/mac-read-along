@@ -46,18 +46,22 @@ enum SurfaceTone: Equatable, Sendable {
 
 /// Pure turn of OCR lines into a trackable surface, testable without a screen.
 enum SurfaceBuilder {
-    static func build(lines: [OCRLine]) -> Surface {
+    /// Builds the reading surface. `columnHint` is the x position (normalized
+    /// to the window) where the user clicked to pick the window: when given,
+    /// the surface keeps only that column's text.
+    static func build(lines: [OCRLine], columnHint: CGFloat? = nil) -> Surface {
         // A window is often several columns (sidebar, document, terminal).
         // Sentences must not run across a gutter: joining columns made speech
         // match one giant sentence with rectangles all over the window.
         let blocks = columnBlocks(lines)
         guard !blocks.isEmpty else { return Surface(sentences: [], rects: [], wordRects: []) }
+        let readingBlocks = selectedBlocks(blocks, hint: columnHint)
 
         var sentences: [Sentence] = []
         var rects: [[CGRect]] = []
         var wordRects: [[CGRect]] = []
 
-        for block in blocks {
+        for block in readingBlocks {
             let ordered = orderLines(block)
             let blockLeft = ordered.map(\.rect.minX).min() ?? 0
             let wrapEdge = ordered.map(\.rect.maxX).max() ?? 0
@@ -104,6 +108,25 @@ enum SurfaceBuilder {
             }
         }
         return Surface(sentences: sentences, rects: rects, wordRects: wordRects)
+    }
+
+    /// The blocks that become the reading surface: the one containing the
+    /// click that picked the window, or when the click fell in a gutter, the
+    /// block with the most words. Text in other columns (sidebars, terminals,
+    /// status bars) must not compete for the cursor.
+    static func selectedBlocks(_ blocks: [[OCRLine]], hint: CGFloat?) -> [[OCRLine]] {
+        guard let hint, !blocks.isEmpty else { return blocks }
+        if let containing = blocks.first(where: { block in
+            let span = block.reduce(CGRect.null) { CGRectUnion($0, $1.rect) }
+            return span.minX <= hint && hint <= span.maxX
+        }) {
+            return [containing]
+        }
+        return [blocks.max(by: { wordCount($0) < wordCount($1) }) ?? blocks[0]]
+    }
+
+    private static func wordCount(_ block: [OCRLine]) -> Int {
+        block.reduce(0) { $0 + $1.text.split(whereSeparator: \.isWhitespace).count }
     }
 
     /// Whether `line` looks like the next wrapped line of `previous`'s

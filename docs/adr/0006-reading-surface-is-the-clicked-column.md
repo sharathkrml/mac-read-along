@@ -1,0 +1,5 @@
+# 0006 — The reading surface is the column the user clicked
+
+Picking a window keeps the click position and restricts the OCR reading surface to the column block whose horizontal span contains it, falling back to the word-dominant block when the click lands in a gutter. Chosen after live diagnosis on a multi-column Electron editor: with the whole window as the surface, sidebar labels and terminal output became sentences ("mac-read-along" appeared eleven times across the tab bar, breadcrumbs, and the file tree), and three-word relocation kept jumping the highlight onto chrome while the reader sat in the editor. The user reads one column, so only one column may compete for the cursor.
+
+Consequences: single-column documents are unchanged (one block), a two-page PDF tracks the clicked page, and a reader who wants a different column re-picks the window. Highlights, auto-scroll, and the tracker all operate on the reduced surface; window-level pieces (outline, tone) still see the whole capture.

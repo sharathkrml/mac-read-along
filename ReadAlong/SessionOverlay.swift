@@ -194,10 +194,15 @@ final class OverlayView: NSView {
         }
     }
 
-    private func place(_ rect: CGRect, in window: CGRect) -> CGRect {
-        scaled(rect, to: window).offsetBy(
-            dx: -screenFrame.origin.x,
-            dy: -screenFrame.origin.y
+    /// Normalized (window-local) rectangles scale into the view's local
+    /// target rect. The rect is already offset onto this screen when `draw`
+    /// computes it, so no screen origin is applied again.
+    func place(_ rect: CGRect, in window: CGRect) -> CGRect {
+        CGRect(
+            x: window.minX + rect.minX * window.width,
+            y: window.minY + rect.minY * window.height,
+            width: rect.width * window.width,
+            height: rect.height * window.height
         )
     }
 
@@ -242,15 +247,6 @@ final class OverlayView: NSView {
         dots.setLineDash([0.5, thickness * 2], count: 2, phase: 0)
         palette.wordDots.setStroke()
         dots.stroke()
-    }
-
-    private func scaled(_ rect: CGRect, to window: CGRect) -> CGRect {
-        CGRect(
-            x: window.minX + rect.minX * window.width,
-            y: window.minY + rect.minY * window.height,
-            width: rect.width * window.width,
-            height: rect.height * window.height
-        )
     }
 
     private func drawNotice(_ text: String, in window: CGRect) {
